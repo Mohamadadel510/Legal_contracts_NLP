@@ -1,0 +1,20 @@
+# LegalLens RAG Retriever - Runtime Dependencies
+#
+# Install:
+#   pip install -r requirements_retriever.txt
+#
+# Python:
+#   Recommended: Python 3.10 - 3.12
+#
+# Notes:
+# - BGE-M3 model weights are downloaded on first use if not already cached.
+# - After the model is cached locally, runtime can work offline.
+# - Qdrant is used in local embedded mode; no Qdrant server is required.
+
+numpy>=1.26,<3
+sentence-transformers>=3.0,<6
+qdrant-client>=1.10,<2
+rank-bm25>=0.2.2,<1
+torch>=2.0
+transformers>=4.40,<5
+huggingface-hub>=0.20
