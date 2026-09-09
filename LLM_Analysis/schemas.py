@@ -63,35 +63,3 @@ class OverallSummarySchema(BaseModel):
     overall_risk_summary: str = Field(
         description="ملخص تنفيذي للمخاطر وتوصيات قانونية شامله للمستخدم"
     )
-
-
-# --------------------------------------------------------------------------
-# Drafting (constructing a new contract from user input)
-# --------------------------------------------------------------------------
-class ContractUserInput(BaseModel):
-    contract_type: str = Field(description="نوع العقد (مثال: عقد إيجار مسكن، عقد عمل، عقد بيع)")
-    party_one_name: str = Field(description="اسم الطرف الأول وصفته (مثال: المؤجر / البائع)")
-    party_two_name: str = Field(description="اسم الطرف الثاني وصفته (مثال: المستأجر / المشتري)")
-    key_terms: List[str] = Field(description="الشروط الأساسية (القيمة المالية، المدة، مكان العين، إلخ)")
-    special_requests: Optional[List[str]] = Field(
-        default_factory=list, description="أي شروط خاصة يطلبها المستخدم"
-    )
-
-
-class ContractClauseDraft(BaseModel):
-    clause_number: int = Field(description="رقم البند")
-    clause_title: str = Field(description="عنوان البند")
-    clause_text: str = Field(description="النص القانوني الملزم للبند")
-    legal_basis: str = Field(description="المادة القانونية المعتمد عليها من القانون المصري لضمان شرعية البند")
-    balance_explanation: str = Field(
-        description="توضيح كيف يحقق هذا البند التوازن وعدم الإجحاف بأحد الطرفين"
-    )
-
-
-class FullContractDocument(BaseModel):
-    contract_title: str = Field(description="العنوان الرسمي للعقد")
-    preamble: str = Field(description="ديباجة العقد وتحديد هوية الأطراف والأهلية القانونية")
-    clauses: List[ContractClauseDraft] = Field(description="قائمة بنود العقد المصاغة قانونياً")
-    closing_and_signatures: str = Field(
-        description="صيغة الخاتمة والإقرار بالاستلام وعدد النسخ والتوقيعات"
-    )

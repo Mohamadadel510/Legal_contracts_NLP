@@ -14,7 +14,6 @@ import logging
 from typing import List, Union
 
 from .analysis import run_parallel_analysis
-from .drafting import generate_balanced_contract
 from .schemas import ContractUserInput, FullContractDocument
 
 logger = logging.getLogger("contract_ai.pipeline")
@@ -60,17 +59,6 @@ class ContractPipeline:
         """
         context_text = _rag_context_to_text(rag_context)
         return await run_parallel_analysis(metadata, clauses, context_text)
-
-    def draft_contract(
-        self, user_input: Union[ContractUserInput, dict], rag_context: Union[str, list, dict]
-    ) -> FullContractDocument:
-        """Runs the drafting stage. Accepts either a ContractUserInput or a
-        plain dict matching its fields (e.g. straight from an API request body).
-        """
-        if isinstance(user_input, dict):
-            user_input = ContractUserInput.model_validate(user_input)
-        context_text = _rag_context_to_text(rag_context)
-        return generate_balanced_contract(user_input, context_text)
 
     # Convenience sync wrapper for callers that aren't already in an event loop
     # (e.g. a plain script or a sync web framework view).

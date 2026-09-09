@@ -10,7 +10,11 @@ from __future__ import annotations
 import logging
 from typing import Type, TypeVar
 
-from ollama import chat
+try:
+    from ollama import chat as ollama_chat
+except ImportError:  # pragma: no cover - depends on optional runtime dependency
+    ollama_chat = None
+
 from pydantic import BaseModel
 
 from .config import settings
