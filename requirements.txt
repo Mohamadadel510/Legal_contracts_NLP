@@ -1,0 +1,33 @@
+# Full runtime for the Streamlit app - every stage of the pipeline.
+# Python 3.10 - 3.12.
+#
+#   pip install -r requirements.txt
+#   streamlit run app.py
+
+# --- UI ---
+streamlit>=1.36
+
+# --- Stage 1: OCR / text preparation ---
+pymupdf>=1.24          # PDF text layer - no external binary needed
+python-docx>=1.1
+pillow>=10.0
+opencv-python>=4.9     # contrast boost before OCR
+pytesseract>=0.3.10    # needs the Tesseract binary + ara language pack
+pdf2image>=1.17        # needs Poppler on PATH (scanned PDFs only)
+
+# --- Stage 3: RAG retrieval ---
+numpy>=1.26,<3
+sentence-transformers>=3.0,<6
+qdrant-client>=1.10,<2
+rank-bm25>=0.2.2,<1
+torch>=2.0
+transformers>=4.40,<5
+huggingface-hub>=0.20
+
+# --- Stage 4: LLM analysis ---
+groq>=0.11             # hosted provider (default)
+ollama>=0.3.0          # local provider (CONTRACT_AI_PROVIDER=ollama)
+pydantic>=2.0
+
+# --- Config ---
+python-dotenv>=1.0

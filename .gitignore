@@ -1,0 +1,16 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+venv/
+outputs/
+.streamlit/secrets.toml
+.claude/
+
+# Local qdrant/index storage and generated embeddings
+index/
+data/index/
+data/embeddings.npy
+data/bm25.pkl
+data/*.npy
+data/*.pkl

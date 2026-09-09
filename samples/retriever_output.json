@@ -1,0 +1,74 @@
+{
+  "query": "عاوز أعمل عقد إيجار أرض زراعية",
+  "contract_type": "agricultural",
+  "top_k": 3,
+  "results": [
+    {
+      "score": null,
+      "dense_score": null,
+      "bm25_score": null,
+      "law_name": "القانون المدني",
+      "law_number": "131",
+      "law_year": 1948,
+      "article_number": "612",
+      "article_label": "مادة 612",
+      "binding_type": "general",
+      "contract_types": [
+        "agricultural",
+        "general"
+      ],
+      "needs_executive_regulation": false,
+      "superseded_by": null,
+      "is_active": true,
+      "start_page": null,
+      "end_page": null,
+      "source_page": null,
+      "text": "إذا ذكر في عقد إيجار الأرض الزراعية أن الإيجار قد عقد لسنة أو لعدة سنوات كان المقصود من ذلك أنه قد عقد لدورة زراعية سنوية أو لعدة دورات."
+    },
+    {
+      "score": null,
+      "dense_score": null,
+      "bm25_score": null,
+      "law_name": "القانون المدني",
+      "law_number": "131",
+      "law_year": 1948,
+      "article_number": "563",
+      "article_label": "مادة 563",
+      "binding_type": "general",
+      "contract_types": [
+        "agricultural",
+        "general"
+      ],
+      "needs_executive_regulation": false,
+      "superseded_by": null,
+      "is_active": true,
+      "start_page": null,
+      "end_page": null,
+      "source_page": null,
+      "text": "إذا عقد الإيجار دون اتفاق على مدة أو عقد لمدة غير معينة أو تعذر إثبات المدة المدعاة، اعتبر الإيجار منعقداً للفترة المعينة لدفع الأجرة."
+    },
+    {
+      "score": null,
+      "dense_score": null,
+      "bm25_score": null,
+      "law_name": "القانون المدني",
+      "law_number": "131",
+      "law_year": 1948,
+      "article_number": "619",
+      "article_label": "مادة 619",
+      "binding_type": "general",
+      "contract_types": [
+        "agricultural",
+        "general"
+      ],
+      "needs_executive_regulation": false,
+      "superseded_by": null,
+      "is_active": true,
+      "start_page": null,
+      "end_page": null,
+      "source_page": null,
+      "text": "يجوز أن تعطى الأرض الزراعية والأرض المغروسة بالأشجار مزارعة للمستأجر في مقابل أخذ المؤجر جزءاً معيناً من المحصول."
+    }
+  ],
+  "note": "Sample structure for the Drafter handoff. Runtime scores and source-page values are populated by the actual retriever."
+}

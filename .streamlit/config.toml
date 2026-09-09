@@ -1,0 +1,19 @@
+# Light, document-like theme: the product shows legal text, and a paper-white
+# surface reads better on a projector than a dark one.
+[theme]
+base = "light"
+primaryColor = "#0F3D5C"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F4F6F9"
+textColor = "#16212B"
+
+[server]
+headless = true
+# The watcher walks every installed module on startup, and transformers
+# raises ModuleNotFoundError for each of its torchvision-backed image
+# processors along the way - dozens of tracebacks that look like the app
+# is broken and are nothing to do with it.
+fileWatcherType = "none"
+
+[browser]
+gatherUsageStats = false
