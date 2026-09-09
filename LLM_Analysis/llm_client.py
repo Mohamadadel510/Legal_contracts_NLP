@@ -11,7 +11,7 @@ import logging
 from typing import Type, TypeVar
 
 try:
-    from ollama import chat as ollama_chat
+    from ollama import chat 
 except ImportError:  # pragma: no cover - depends on optional runtime dependency
     ollama_chat = None
 
