@@ -1,653 +1,336 @@
 # ============================================================
-# LegalLens - Contract RAG Retriever
-# modules/retriever.py
+# LegalLens - Final Retriever
+# BAAI/bge-m3 + exported Qdrant vectors
 # ============================================================
 
+from __future__ import annotations
+
 import json
-import pickle
-import re
 import os
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 from sentence_transformers import SentenceTransformer
-from qdrant_client import QdrantClient
-from qdrant_client.models import (
-    Filter,
-    FieldCondition,
-    MatchAny,
-    MatchValue,
-)
 
 
 # ============================================================
 # PATHS
 # ============================================================
 
-# Project root:
-# contract-analyzer/
-# ├── src/
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Expected structure:
+#
+# rag/
+# ├── modules/
 # │   └── retriever.py
-# └── data/
-#     ├── legal_articles.json
-#     ├── bm25.pkl
-#     ├── embeddings.npy
-#     └── index/
-#         └── legal_rag_qdrant/
+# │
+# └── index/
+#     └── qdrant_export/
+#         ├── collection_config.json
+#         └── legallens_legal_only_points.json
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+INDEX_DIR = BASE_DIR / "index" / "qdrant_export"
 
-DATA_DIR = PROJECT_ROOT / "data"
+POINTS_PATH = (
+    INDEX_DIR / "legallens_legal_only_points.json"
+)
 
-INDEX_DIR = DATA_DIR / "index"
-
-ARTICLES_PATH = DATA_DIR / "legal_articles.json"
-
-BM25_PATH = DATA_DIR / "bm25.pkl"
-
-EMBEDDINGS_PATH = DATA_DIR / "embeddings.npy"
-
-QDRANT_PATH = INDEX_DIR / "legal_rag_qdrant"
-
-COLLECTION_NAME = "egyptian_legal_articles_contract_types"
-
-
-# ============================================================
-# EMBEDDING MODEL
-# ============================================================
-
-EMBEDDING_MODEL_NAME = "BAAI/bge-m3"
-
-
-# ============================================================
-# LOAD DATA ONCE
-# ============================================================
-
-print("Loading LegalLens RAG...")
-
-with open(
-    ARTICLES_PATH,
-    "r",
-    encoding="utf-8",
-) as f:
-
-    ALL_ARTICLES = json.load(f)
-
-
-with open(
-    BM25_PATH,
-    "rb",
-) as f:
-
-    BM25_DATA = pickle.load(f)
-
-
-BM25 = BM25_DATA["bm25"]
-
-
-EMBEDDINGS = np.load(
-    EMBEDDINGS_PATH
+CONFIG_PATH = (
+    INDEX_DIR / "collection_config.json"
 )
 
 
 # ============================================================
-# LOAD EMBEDDING MODEL ONCE
+# MODEL
 # ============================================================
 
-EMBEDDING_MODEL = SentenceTransformer(
-    EMBEDDING_MODEL_NAME
+MODEL_NAME = os.getenv(
+    "LEGALLENS_EMBEDDING_MODEL",
+    "BAAI/bge-m3"
 )
 
 
 # ============================================================
-# CONNECT TO QDRANT ONCE
+# DEFAULTS
 # ============================================================
 
-# Prefer an HTTP Qdrant if `QDRANT_URL` is provided (useful for docker-compose).
-QDRANT_URL = os.environ.get("QDRANT_URL", "").strip()
-if QDRANT_URL:
-    QDRANT = QdrantClient(url=QDRANT_URL)
-else:
-    QDRANT = QdrantClient(path=str(QDRANT_PATH))
+DEFAULT_TOP_K = 3
+
+# None means no filtering.
+# Example:
+# SIMILARITY_THRESHOLD = 0.45
+#
+# We leave it None initially because the correct threshold
+# should be calibrated on validation data.
+SIMILARITY_THRESHOLD = None
 
 
 # ============================================================
-# VALIDATION
+# CACHED GLOBAL RESOURCES
 # ============================================================
 
-if len(ALL_ARTICLES) != len(EMBEDDINGS):
+_model: SentenceTransformer | None = None
 
-    raise RuntimeError(
-        "Articles and embeddings count mismatch: "
-        f"{len(ALL_ARTICLES)} articles vs "
-        f"{len(EMBEDDINGS)} embeddings"
+_vectors: np.ndarray | None = None
+
+_metadata: list[dict[str, Any]] | None = None
+
+_initialized = False
+
+
+# ============================================================
+# LOAD MODEL
+# ============================================================
+
+def _load_model() -> SentenceTransformer:
+
+    global _model
+
+    if _model is None:
+
+        _model = SentenceTransformer(
+            MODEL_NAME
+        )
+
+    return _model
+
+
+# ============================================================
+# LOAD EXPORTED QDRANT DATA
+# ============================================================
+
+def _load_points() -> None:
+
+    global _vectors
+    global _metadata
+    global _initialized
+
+    if _initialized:
+        return
+
+    if not POINTS_PATH.exists():
+
+        raise FileNotFoundError(
+            f"Final RAG index not found:\n"
+            f"{POINTS_PATH}"
+        )
+
+    print(
+        "Loading LegalLens final index..."
+    )
+
+    with open(
+        POINTS_PATH,
+        "r",
+        encoding="utf-8"
+    ) as f:
+
+        points = json.load(f)
+
+    if not points:
+
+        raise ValueError(
+            "The Qdrant export contains no points."
+        )
+
+    vectors = []
+    metadata = []
+
+    for point in points:
+
+        vector = point.get(
+            "vector"
+        )
+
+        payload = point.get(
+            "payload",
+            {}
+        )
+
+        if vector is None:
+
+            continue
+
+        vectors.append(
+            vector
+        )
+
+        metadata.append(
+            {
+                "id": point.get("id"),
+
+                "law_id": payload.get(
+                    "law_id",
+                    ""
+                ),
+
+                "law_name": payload.get(
+                    "law_name",
+                    ""
+                ),
+
+                "article_number": str(
+                    payload.get(
+                        "article",
+                        payload.get(
+                            "article_number",
+                            ""
+                        )
+                    )
+                ),
+
+                "article_text": payload.get(
+                    "text",
+                    payload.get(
+                        "article_text",
+                        ""
+                    )
+                ),
+
+                "source": payload.get(
+                    "source",
+                    ""
+                ),
+
+                "doc_type": payload.get(
+                    "doc_type",
+                    "legal_article"
+                )
+            }
+        )
+
+    if not vectors:
+
+        raise ValueError(
+            "No vectors found in the Qdrant export."
+        )
+
+    _vectors = np.asarray(
+        vectors,
+        dtype=np.float32
+    )
+
+    _metadata = metadata
+
+    # --------------------------------------------------------
+    # Normalize vectors
+    #
+    # The original Final RAG used normalized BGE-M3 vectors
+    # with cosine similarity.
+    # --------------------------------------------------------
+
+    norms = np.linalg.norm(
+        _vectors,
+        axis=1,
+        keepdims=True
+    )
+
+    norms[norms == 0] = 1.0
+
+    _vectors = (
+        _vectors / norms
+    )
+
+    _initialized = True
+
+    print(
+        f"✅ Loaded {_vectors.shape[0]} legal vectors"
+    )
+
+    print(
+        f"✅ Vector dimension: {_vectors.shape[1]}"
     )
 
 
-if not QDRANT.collection_exists(
-    COLLECTION_NAME
-):
+# ============================================================
+# INITIALIZE
+# ============================================================
 
-    raise RuntimeError(
-        f"Qdrant collection not found: "
-        f"{COLLECTION_NAME}"
-    )
+def initialize() -> None:
+    """
+    Load the model and final legal index once.
 
+    Call this when the application starts.
+    """
 
-print(
-    f"RAG loaded successfully: "
-    f"{len(ALL_ARTICLES)} articles"
-)
+    _load_model()
+
+    _load_points()
 
 
 # ============================================================
-# ARABIC NORMALIZATION
+# EMBED QUERY
 # ============================================================
 
-def normalize_arabic(text: str) -> str:
-
-    if not isinstance(text, str):
-
-        return ""
-
-    # Remove Arabic diacritics
-    text = re.sub(
-        r"[\u064B-\u065F\u0670]",
-        "",
-        text
-    )
-
-    # Normalize Arabic letters
-    text = text.replace("أ", "ا")
-    text = text.replace("إ", "ا")
-    text = text.replace("آ", "ا")
-    text = text.replace("ٱ", "ا")
-
-    # Normalize Alef Maqsura
-    text = text.replace("ى", "ي")
-
-    # Normalize whitespace
-    text = re.sub(
-        r"\s+",
-        " ",
-        text
-    )
-
-    return text.strip()
-
-
-# ============================================================
-# TOKENIZATION
-# ============================================================
-
-def tokenize_arabic(text: str):
-
-    text = normalize_arabic(
-        text
-    )
-
-    return re.findall(
-        r"[\u0600-\u06FF]+",
-        text
-    )
-
-
-# ============================================================
-# QUERY REWRITING
-# ============================================================
-
-QUERY_SYNONYMS = {
-
-    "ايجار": "إيجار",
-
-    "اجرة": "أجرة",
-
-    "فلوس": "مقابل مالي",
-
-    "مرتب": "أجر",
-
-    "شغل": "عمل",
-
-    "موظف": "عامل",
-}
-
-
-def rewrite_query(
+def _embed_query(
     query: str
-) -> str:
+) -> np.ndarray:
 
-    if not isinstance(
-        query,
-        str
-    ):
+    model = _load_model()
 
-        raise TypeError(
-            "query must be a string"
-        )
-
-    query = normalize_arabic(
-        query
+    embedding = model.encode(
+        [query],
+        normalize_embeddings=True,
+        convert_to_numpy=True,
+        show_progress_bar=False
     )
 
-    for old, new in QUERY_SYNONYMS.items():
-
-        query = re.sub(
-            rf"\b{re.escape(old)}\b",
-            new,
-            query,
-            flags=re.IGNORECASE
-        )
-
-    return query.strip()
-
-
-# ============================================================
-# DENSE SEARCH
-# ============================================================
-
-def dense_search(
-    query: str,
-    contract_type: str,
-    top_k: int = 20,
-):
-
-    query_embedding = (
-        EMBEDDING_MODEL.encode(
-            [rewrite_query(query)],
-            normalize_embeddings=True,
-        )[0]
-    )
-
-
-    query_filter = Filter(
-
-        must=[
-
-            # Type OR general. Filtering on the type alone starves the
-            # search: only 9 of 1352 articles carry "residential", so every
-            # clause in a rental contract came back with the same handful of
-            # articles no matter what it said. Every article also carries
-            # "general", and the civil code genuinely does govern all of
-            # these contracts - so let relevance rank the corpus and let the
-            # type tag lift its own articles rather than exclude the rest.
-            FieldCondition(
-
-                key="contract_types",
-
-                match=MatchAny(
-                    any=[
-                        contract_type,
-                        "general",
-                    ]
-                ),
-
-            ),
-
-            FieldCondition(
-
-                key="is_active",
-
-                match=MatchValue(
-                    value=True
-                ),
-
-            ),
-
-        ]
-
-    )
-
-
-    results = QDRANT.query_points(
-
-        collection_name=COLLECTION_NAME,
-
-        query=query_embedding.tolist(),
-
-        query_filter=query_filter,
-
-        limit=top_k,
-
-    )
-
-
-    return results.points
-
-
-# ============================================================
-# BM25 SEARCH
-# ============================================================
-
-def bm25_search(
-    query: str,
-    contract_type: str,
-    top_k: int = 20,
-):
-
-    tokens = tokenize_arabic(
-        rewrite_query(query)
-    )
-
-
-    scores = BM25.get_scores(
-        tokens
-    )
-
-
-    ranked_indices = np.argsort(
-        scores
-    )[::-1]
-
-
-    results = []
-
-
-    for idx in ranked_indices:
-
-        article = ALL_ARTICLES[
-            int(idx)
-        ]
-
-
-        article_types = set(
-            article.get(
-                "contract_types",
-                ["general"]
-            )
-        )
-
-
-        # Same rule as the dense filter above. This also revives BM25 at all:
-        # legal_articles.json shipped without contract_types, so every article
-        # defaulted to ["general"], failed a strict "residential" test, and the
-        # sparse half of the hybrid search returned nothing for every query.
-        if not article_types & {contract_type, "general"}:
-
-            continue
-
-
-        if not article.get(
-            "is_active",
-            True
-        ):
-
-            continue
-
-
-        results.append({
-
-            "index": int(idx),
-
-            "score": float(
-                scores[idx]
-            ),
-
-        })
-
-
-        if len(results) >= top_k:
-
-            break
-
-
-    return results
-
-
-# ============================================================
-# RECIPROCAL RANK FUSION
-# ============================================================
-
-def reciprocal_rank_fusion(
-    dense_results,
-    bm25_results,
-    k: int = 60,
-):
-
-    fused = {}
-
-
-    # --------------------------
-    # Dense results
-    # --------------------------
-
-    for rank, point in enumerate(
-        dense_results,
-        start=1
-    ):
-
-        idx = int(
-            point.id
-        )
-
-
-        if idx not in fused:
-
-            fused[idx] = {
-
-                "score": 0.0,
-
-                "dense_score": 0.0,
-
-                "bm25_score": 0.0,
-
-            }
-
-
-        fused[idx][
-            "score"
-        ] += 1 / (
-            k + rank
-        )
-
-
-        fused[idx][
-            "dense_score"
-        ] = float(
-            point.score
-        )
-
-
-    # --------------------------
-    # BM25 results
-    # --------------------------
-
-    for rank, item in enumerate(
-        bm25_results,
-        start=1
-    ):
-
-        idx = int(
-            item["index"]
-        )
-
-
-        if idx not in fused:
-
-            fused[idx] = {
-
-                "score": 0.0,
-
-                "dense_score": 0.0,
-
-                "bm25_score": 0.0,
-
-            }
-
-
-        fused[idx][
-            "score"
-        ] += 1 / (
-            k + rank
-        )
-
-
-        fused[idx][
-            "bm25_score"
-        ] = float(
-            item["score"]
-        )
-
-
-    return sorted(
-
-        fused.items(),
-
-        key=lambda x: x[1]["score"],
-
-        reverse=True,
-
+    return embedding.astype(
+        np.float32
     )
 
 
 # ============================================================
-# BUILD RESULT
-# ============================================================
-
-def format_result(
-    idx: int,
-    scores: dict,
-):
-
-    article = ALL_ARTICLES[
-        idx
-    ]
-
-
-    return {
-
-        # Retrieval information
-        "score": float(
-            scores["score"]
-        ),
-
-        "dense_score": float(
-            scores["dense_score"]
-        ),
-
-        "bm25_score": float(
-            scores["bm25_score"]
-        ),
-
-
-        # Legal citation
-        "law_name": article.get(
-            "law_name"
-        ),
-
-        "law_number": article.get(
-            "law_number"
-        ),
-
-        "law_year": article.get(
-            "law_year"
-        ),
-
-        "article_number": article.get(
-            "article_number"
-        ),
-
-        "article_label": article.get(
-            "article_label"
-        ),
-
-        # Legal metadata
-        "binding_type": article.get(
-            "binding_type",
-            "general"
-        ),
-
-        "contract_types": article.get(
-            "contract_types",
-            ["general"]
-        ),
-
-        "needs_executive_regulation": (
-            article.get(
-                "needs_executive_regulation",
-                False
-            )
-        ),
-
-        "superseded_by": article.get(
-            "superseded_by"
-        ),
-
-        "is_active": article.get(
-            "is_active",
-            True
-        ),
-
-        # Source location
-        "start_page": article.get(
-            "start_page"
-        ),
-
-        "end_page": article.get(
-            "end_page"
-        ),
-
-        "source_page": article.get(
-            "start_page"
-        ),
-
-        # Actual legal text
-        "text": article.get(
-            "text",
-            ""
-        ),
-
-    }
-
-
-# ============================================================
-# MAIN PUBLIC API
+# RETRIEVE
 # ============================================================
 
 def retrieve(
     clause_text: str,
     contract_type: str,
-    top_k: int = 3,
-    exclude_penalty: bool = True,
+    top_k: int = 3
 ) -> list[dict]:
-
     """
-    Retrieve relevant legal articles for the Drafter.
+    Retrieve the most relevant Egyptian legal articles.
 
     Parameters
     ----------
-    clause_text : str
-        User requirement or clause description.
+    clause_text:
+        Contract clause or legal question.
 
-    contract_type : str
-        Contract type selected by the user.
+    contract_type:
+        Contract type supplied by the application.
 
-        Supported values:
-            residential
-            agricultural
-            commercial
-            employment
-            company
-            sale
-            supply
-            service
-            consumer
+        NOTE:
+        It is intentionally NOT used as a strict filter.
+        The previous experiments showed that contract-type
+        classification can produce false positives.
 
-    top_k : int
-        Number of final legal articles to return.
-
-    exclude_penalty : bool
-        Drop articles whose binding_type is "penalty". True suits the
-        drafting flow (a new contract should not quote penalty provisions).
-        Pass False for risk analysis, where penalty and nullity provisions
-        are exactly the legal basis a harmful clause must be checked against.
+    top_k:
+        Number of legal articles to return.
 
     Returns
     -------
     list[dict]
-        Ranked legal articles with citation metadata,
-        similarity scores, and legal text.
+
+    Example
+    -------
+    [
+        {
+            "law_id": "labor_law_14_2025",
+            "law_name": "قانون العمل رقم 14 لسنة 2025",
+            "article_number": "89",
+            "article_text": "...",
+            "score": 0.7421,
+            "source": "..."
+        }
+    ]
     """
 
+    # --------------------------------------------------------
+    # Validate query
+    # --------------------------------------------------------
 
     if not isinstance(
         clause_text,
@@ -655,423 +338,174 @@ def retrieve(
     ):
 
         raise TypeError(
-            "clause_text must be a string"
+            "clause_text must be a string."
         )
 
+    clause_text = clause_text.strip()
 
-    if not clause_text.strip():
+    if not clause_text:
 
-        raise ValueError(
-            "clause_text cannot be empty"
-        )
+        return []
 
+    if top_k <= 0:
 
-    if not isinstance(
-        contract_type,
-        str
+        return []
+
+    top_k = int(top_k)
+
+    # --------------------------------------------------------
+    # Load resources ONCE
+    # --------------------------------------------------------
+
+    initialize()
+
+    if (
+        _vectors is None
+        or _metadata is None
     ):
 
-        raise TypeError(
-            "contract_type must be a string"
+        raise RuntimeError(
+            "LegalLens retriever is not initialized."
         )
 
+    # --------------------------------------------------------
+    # Query embedding
+    # --------------------------------------------------------
 
-    if not isinstance(
+    query_vector = _embed_query(
+        clause_text
+    )
+
+    # --------------------------------------------------------
+    # Cosine similarity
+    #
+    # Both query and document vectors are normalized.
+    # Therefore:
+    #
+    # cosine_similarity = dot_product
+    # --------------------------------------------------------
+
+    scores = (
+        _vectors @ query_vector[0]
+    )
+
+    # --------------------------------------------------------
+    # Get top candidates
+    # --------------------------------------------------------
+
+    k = min(
         top_k,
-        int
-    ) or top_k <= 0:
+        len(scores)
+    )
 
-        raise ValueError(
-            "top_k must be a positive integer"
+    candidate_indices = np.argpartition(
+        -scores,
+        k - 1
+    )[:k]
+
+    # Sort candidates by score
+    candidate_indices = candidate_indices[
+        np.argsort(
+            -scores[candidate_indices]
         )
+    ]
 
-
-    supported_types = {
-
-        "residential",
-        "agricultural",
-        "commercial",
-        "employment",
-        "company",
-        "sale",
-        "supply",
-        "service",
-        "consumer",
-
-    }
-
-
-    if contract_type not in supported_types:
-
-        raise ValueError(
-
-            f"Unsupported contract_type: "
-            f"{contract_type}. "
-
-            f"Supported types: "
-            f"{sorted(supported_types)}"
-
-        )
-
-
-    # ========================================================
-    # Retrieve more candidates than final top_k
-    # ========================================================
-
-    candidate_k = max(
-        20,
-        top_k * 5
-    )
-
-
-    # ========================================================
-    # Dense Retrieval
-    # ========================================================
-
-    dense_results = dense_search(
-
-        query=clause_text,
-
-        contract_type=contract_type,
-
-        top_k=candidate_k,
-
-    )
-
-
-    # ========================================================
-    # BM25 Retrieval
-    # ========================================================
-
-    bm25_results = bm25_search(
-
-        query=clause_text,
-
-        contract_type=contract_type,
-
-        top_k=candidate_k,
-
-    )
-
-
-    # ========================================================
-    # Hybrid Fusion
-    # ========================================================
-
-    fused_results = reciprocal_rank_fusion(
-
-        dense_results,
-
-        bm25_results,
-
-    )
-
-
-    # ========================================================
-    # Build Final Results
-    # ========================================================
+    # --------------------------------------------------------
+    # Build final results
+    # --------------------------------------------------------
 
     results = []
 
+    for rank, idx in enumerate(
+        candidate_indices,
+        start=1
+    ):
 
-    for idx, scores in fused_results:
-
-        idx = int(idx)
-
-
-        article = ALL_ARTICLES[
-            idx
-        ]
-
-
-        # Drafter should not retrieve penalty clauses; risk analysis needs them
-        if exclude_penalty and article.get(
-            "binding_type"
-        ) == "penalty":
-
-            continue
-
-
-        result = format_result(
-            idx,
-            scores
+        score = float(
+            scores[idx]
         )
 
+        # Optional threshold
+        if (
+            SIMILARITY_THRESHOLD is not None
+            and score < SIMILARITY_THRESHOLD
+        ):
+            continue
+
+        item = _metadata[idx]
 
         results.append(
-            result
-        )
-
-
-        if len(results) >= top_k:
-
-            break
-
-
-    # ========================================================
-    # General fallback
-    # ========================================================
-
-    if len(results) < top_k:
-
-        dense_general = (
-            dense_search_general(
-                clause_text,
-                top_k=candidate_k
-            )
-        )
-
-
-        bm25_general = (
-            bm25_search_general(
-                clause_text,
-                top_k=candidate_k
-            )
-        )
-
-
-        fused_general = (
-            reciprocal_rank_fusion(
-                dense_general,
-                bm25_general
-            )
-        )
-
-
-        existing_articles = {
-
-            (
-                r["law_name"],
-                r["article_number"],
-                r["text"]
-            )
-
-            for r in results
-
-        }
-
-
-        for idx, scores in fused_general:
-
-            idx = int(idx)
-
-
-            article = ALL_ARTICLES[
-                idx
-            ]
-
-
-            if article.get(
-                "contract_types",
-                ["general"]
-            ) != ["general"]:
-
-                continue
-
-
-            if exclude_penalty and article.get(
-                "binding_type"
-            ) == "penalty":
-
-                continue
-
-
-            key = (
-
-                article.get(
-                    "law_name"
+            {
+                "law_id": item.get(
+                    "law_id",
+                    ""
                 ),
 
-                article.get(
-                    "article_number"
+                "law_name": item.get(
+                    "law_name",
+                    ""
                 ),
 
-                article.get(
-                    "text"
+                "article_number": str(
+                    item.get(
+                        "article_number",
+                        ""
+                    )
                 ),
 
-            )
+                "article_text": item.get(
+                    "article_text",
+                    ""
+                ),
 
+                "score": round(
+                    score,
+                    6
+                ),
 
-            if key in existing_articles:
-
-                continue
-
-
-            results.append(
-
-                format_result(
-                    idx,
-                    scores
+                "source": item.get(
+                    "source",
+                    ""
                 )
-
-            )
-
-
-            if len(results) >= top_k:
-
-                break
-
-
-    return results[:top_k]
-
-
-# ============================================================
-# GENERAL ARTICLE SEARCH
-# ============================================================
-
-def dense_search_general(
-    query: str,
-    top_k: int = 20,
-):
-
-    query_embedding = (
-        EMBEDDING_MODEL.encode(
-            [rewrite_query(query)],
-            normalize_embeddings=True,
-        )[0]
-    )
-
-
-    query_filter = Filter(
-
-        must=[
-
-            FieldCondition(
-
-                key="contract_types",
-
-                match=MatchAny(
-                    any=["general"]
-                ),
-
-            ),
-
-            FieldCondition(
-
-                key="is_active",
-
-                match=MatchValue(
-                    value=True
-                ),
-
-            ),
-
-        ]
-
-    )
-
-
-    results = QDRANT.query_points(
-
-        collection_name=COLLECTION_NAME,
-
-        query=query_embedding.tolist(),
-
-        query_filter=query_filter,
-
-        limit=top_k,
-
-    )
-
-
-    return results.points
-
-
-def bm25_search_general(
-    query: str,
-    top_k: int = 20,
-):
-
-    tokens = tokenize_arabic(
-        rewrite_query(query)
-    )
-
-
-    scores = BM25.get_scores(
-        tokens
-    )
-
-
-    ranked_indices = np.argsort(
-        scores
-    )[::-1]
-
-
-    results = []
-
-
-    for idx in ranked_indices:
-
-        article = ALL_ARTICLES[
-            int(idx)
-        ]
-
-
-        if article.get(
-            "contract_types",
-            ["general"]
-        ) != ["general"]:
-
-            continue
-
-
-        if not article.get(
-            "is_active",
-            True
-        ):
-
-            continue
-
-
-        results.append({
-
-            "index": int(idx),
-
-            "score": float(
-                scores[idx]
-            ),
-
-        })
-
-
-        if len(results) >= top_k:
-
-            break
-
+            }
+        )
 
     return results
 
 
 # ============================================================
-# OPTIONAL: CONTEXT FOR LLM
+# HEALTH CHECK
 # ============================================================
 
-def build_legal_context(
-    results: list[dict]
-) -> str:
+def health_check() -> dict:
 
-    context = []
+    initialize()
 
+    return {
+        "status": "ok",
 
-    for result in results:
+        "embedding_model":
+            MODEL_NAME,
 
-        context.append(
+        "index":
+            "legallens_legal_only",
 
-            f"""
-القانون: {result.get("law_name", "")}
-رقم القانون: {result.get("law_number", "")}
-سنة القانون: {result.get("law_year", "")}
-المادة: {result.get("article_number", "")}
-نوع الحكم: {result.get("binding_type", "general")}
+        "documents":
+            len(_metadata)
+            if _metadata
+            else 0,
 
-النص القانوني:
-{result.get("text", "")}
-""".strip()
+        "vector_dimension":
+            int(_vectors.shape[1])
+            if _vectors is not None
+            else 0,
 
-        )
+        "similarity":
+            "cosine",
 
+        "default_top_k":
+            DEFAULT_TOP_K,
 
-    return "\n\n".join(
-        context
-    )
+        "similarity_threshold":
+            SIMILARITY_THRESHOLD
+    }
