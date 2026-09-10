@@ -1,0 +1,6 @@
+# LegalLens Retriever Dependencies
+
+sentence-transformers==5.1.1
+transformers==4.56.2
+torch
+numpy
