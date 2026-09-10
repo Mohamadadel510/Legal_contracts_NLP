@@ -1,0 +1,9 @@
+{
+  "collection": "legallens_legal_only",
+  "points": 2443,
+  "vector_dimension": 1024,
+  "distance": "COSINE",
+  "embedding_model": "BAAI/bge-m3",
+  "corpus": 2443,
+  "export_file": "legallens_legal_only_points.json"
+}

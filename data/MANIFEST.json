@@ -1,0 +1,70 @@
+[
+  {
+    "file": "qdrant/legallens_qdrant/.lock",
+    "size_bytes": 13
+  },
+  {
+    "file": "qdrant/legallens_qdrant/meta.json",
+    "size_bytes": 1076
+  },
+  {
+    "file": "qdrant/legallens_qdrant/collection/legallens_legal_only/storage.sqlite",
+    "size_bytes": 28839936
+  },
+  {
+    "file": "qdrant/legallens_qdrant/collection/legallens_hybrid_rag/storage.sqlite",
+    "size_bytes": 29003776
+  },
+  {
+    "file": "data/16 - قانون حماية المستهلك.pdf",
+    "size_bytes": 325425
+  },
+  {
+    "file": "data/Law No. 159 of 1981 promulgating the Law of Joint Stock Companies, Limited Liability Companies and Limited Liability Companies.pdf",
+    "size_bytes": 473923
+  },
+  {
+    "file": "data/commercial_law_ocr.txt",
+    "size_bytes": 497891
+  },
+  {
+    "file": "data/law-131-1948.pdf",
+    "size_bytes": 851387
+  },
+  {
+    "file": "data/law-17-1999.pdf",
+    "size_bytes": 757815
+  },
+  {
+    "file": "data/lawegypt_contracts_clean.xlsx",
+    "size_bytes": 92879
+  },
+  {
+    "file": "data/qnwn_lml_ljdyd_14_lsn_2025_m_q.pdf",
+    "size_bytes": 956979
+  },
+  {
+    "file": "metadata/PROJECT_STATUS.txt",
+    "size_bytes": 2149
+  },
+  {
+    "file": "metadata/runtime_metadata.json",
+    "size_bytes": 611
+  },
+  {
+    "file": "metadata/unified_corpus.pkl",
+    "size_bytes": 2042208
+  },
+  {
+    "file": "metadata/legal_corpus.pkl",
+    "size_bytes": 1767551
+  },
+  {
+    "file": "metadata/gold_analyzer_v2.pkl",
+    "size_bytes": 1440
+  },
+  {
+    "file": "metadata/enriched_legal_corpus.pkl",
+    "size_bytes": 3178788
+  }
+]
