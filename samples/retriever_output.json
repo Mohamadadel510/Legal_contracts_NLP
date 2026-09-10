@@ -1,74 +1,34 @@
 {
-  "query": "عاوز أعمل عقد إيجار أرض زراعية",
-  "contract_type": "agricultural",
+  "query": "ما هي التزامات صاحب العمل تجاه العامل؟",
+  "contract_type": "employment",
   "top_k": 3,
   "results": [
     {
-      "score": null,
-      "dense_score": null,
-      "bm25_score": null,
-      "law_name": "القانون المدني",
-      "law_number": "131",
-      "law_year": 1948,
-      "article_number": "612",
-      "article_label": "مادة 612",
-      "binding_type": "general",
-      "contract_types": [
-        "agricultural",
-        "general"
-      ],
-      "needs_executive_regulation": false,
-      "superseded_by": null,
-      "is_active": true,
-      "start_page": null,
-      "end_page": null,
-      "source_page": null,
-      "text": "إذا ذكر في عقد إيجار الأرض الزراعية أن الإيجار قد عقد لسنة أو لعدة سنوات كان المقصود من ذلك أنه قد عقد لدورة زراعية سنوية أو لعدة دورات."
+      "rank": 1,
+      "law_id": "labor_law_14_2025",
+      "law_name": "قانون العمل رقم 14 لسنة 2025",
+      "article_number": "134",
+      "article_text": "نص المادة المسترجعة من قاعدة البيانات القانونية.",
+      "score": 0.6701,
+      "source": "qnwn_lml_ljdyd_14_lsn_2025_m_q.pdf"
     },
     {
-      "score": null,
-      "dense_score": null,
-      "bm25_score": null,
-      "law_name": "القانون المدني",
-      "law_number": "131",
-      "law_year": 1948,
-      "article_number": "563",
-      "article_label": "مادة 563",
-      "binding_type": "general",
-      "contract_types": [
-        "agricultural",
-        "general"
-      ],
-      "needs_executive_regulation": false,
-      "superseded_by": null,
-      "is_active": true,
-      "start_page": null,
-      "end_page": null,
-      "source_page": null,
-      "text": "إذا عقد الإيجار دون اتفاق على مدة أو عقد لمدة غير معينة أو تعذر إثبات المدة المدعاة، اعتبر الإيجار منعقداً للفترة المعينة لدفع الأجرة."
+      "rank": 2,
+      "law_id": "civil_code_131_1948",
+      "law_name": "القانون المدني رقم 131 لسنة 1948",
+      "article_number": "689",
+      "article_text": "نص المادة المسترجعة من قاعدة البيانات القانونية.",
+      "score": 0.6695,
+      "source": "law-131-1948.pdf"
     },
     {
-      "score": null,
-      "dense_score": null,
-      "bm25_score": null,
-      "law_name": "القانون المدني",
-      "law_number": "131",
-      "law_year": 1948,
-      "article_number": "619",
-      "article_label": "مادة 619",
-      "binding_type": "general",
-      "contract_types": [
-        "agricultural",
-        "general"
-      ],
-      "needs_executive_regulation": false,
-      "superseded_by": null,
-      "is_active": true,
-      "start_page": null,
-      "end_page": null,
-      "source_page": null,
-      "text": "يجوز أن تعطى الأرض الزراعية والأرض المغروسة بالأشجار مزارعة للمستأجر في مقابل أخذ المؤجر جزءاً معيناً من المحصول."
+      "rank": 3,
+      "law_id": "labor_law_14_2025",
+      "law_name": "قانون العمل رقم 14 لسنة 2025",
+      "article_number": "267",
+      "article_text": "نص المادة المسترجعة من قاعدة البيانات القانونية.",
+      "score": 0.6623,
+      "source": "qnwn_lml_ljdyd_14_lsn_2025_m_q.pdf"
     }
-  ],
-  "note": "Sample structure for the Drafter handoff. Runtime scores and source-page values are populated by the actual retriever."
+  ]
 }
