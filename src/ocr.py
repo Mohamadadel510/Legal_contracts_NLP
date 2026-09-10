@@ -1,6 +1,20 @@
 # -*- coding: utf-8 -*-
 """
-Stage 1 - OCR + Arabic document formatting (Synced with Notebook Pipeline)
+Stage 1 - OCR + Arabic document formatting.
+
+This module mirrors the logic of contracts_ocr_pipeline.ipynb:
+
+1. PDF/image -> 300 DPI images with PyMuPDF.
+2. Local Tesseract OCR using ara+eng and --oem 3 --psm 6.
+3. Preserve raw OCR line/page structure.
+4. Send EACH PAGE independently to Gemini for correction and formatting.
+5. Keep all names, numbers, dates and legal content; never summarize.
+6. If Gemini fails, keep the raw OCR page instead of losing data.
+7. Save the raw and formatted outputs.
+8. Return the final formatted document for the chatbot/RAG stage.
+
+Public API:
+    extract(file_path, refine=True) -> dict
 """
 
 from __future__ import annotations
@@ -42,6 +56,13 @@ try:
 except ImportError:
     HAS_GENAI = False
 
+try:
+    import docx
+    HAS_DOCX = True
+except ImportError:
+    HAS_DOCX = False
+
+
 SUPPORTED_EXTENSIONS = {
     ".pdf",
     ".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tiff",
@@ -49,7 +70,6 @@ SUPPORTED_EXTENSIONS = {
     ".txt", ".csv", ".json",
 }
 
-# الإعدادات المتوافقة مع النوت بوك
 CONFIG: Dict[str, Any] = {
     "output_dir": os.environ.get("OCR_OUTPUT_DIR", "/content/output"),
     "langs": ["ar", "eng"],
@@ -60,23 +80,100 @@ CONFIG: Dict[str, Any] = {
     "gemini_model": os.environ.get("GEMINI_OCR_MODEL", "gemini-3.6-flash"),
 }
 
+PAGE_SEPARATOR = "\n\n--- صفحة جديدة ---\n\n"
+
+
 # ============================================================================
-# Gemini Client Helper
+# Gemini client & helpers
 # ============================================================================
 def _get_gemini_api_key() -> str:
-    """قراءة مفتاح API الخاص بـ Gemini من بيئة العمل."""
+    """Read the Gemini key from the environment."""
     return os.environ.get("GEMINI_API_KEY", "").strip()
+
 
 def gemini_available() -> bool:
     return HAS_GENAI and bool(_get_gemini_api_key())
+
 
 def _get_gemini_client():
     if not gemini_available():
         return None
     return genai.Client(api_key=_get_gemini_api_key())
 
+
+def _build_page_prompt(page_num: int, raw_page_text: str) -> str:
+    """
+    Same page-level prompt used by the notebook to ensure lossless formatting.
+    """
+    return f"""
+أنت خبير تدقيق وتصحيح نصوص الـ OCR. أمامك النص الخام المستخرج من الصفحة رقم ({page_num}) من المستند.
+
+المطلوب منك بدقة:
+1. تصحيح الأخطاء الإملائية والمطبعية والكلمات المقطوعة الناتجة عن الـ OCR.
+2. إعادة تنسيق النص بأسلوب مرتب ومقروء (عناوين، بنود، فقرات).
+3. الحفاظ الكامل على جميع البيانات، الأسماء، الأرقام، والتواريخ دون اختصار أو حذف أي جزء.
+4. لا تخترع أي معلومة غير موجودة في النص الخام.
+5. لا تلخص النص ولا تعيد صياغته بما يغير معناه القانوني.
+6. إذا كان جزء ما غير واضح ولا يمكن تصحيحه بثقة، اتركه كما هو بدل التخمين.
+7. ابدأ استجابتك مباشرة بـ "--- صفحة {page_num} ---" ثم اتبعها بالنص المنسق دون كتابة أي مقدمات أو شروحات.
+
+النص الخام للصفحة {page_num}:
+{raw_page_text}
+""".strip()
+
+
+def _strip_unwanted_preamble(text: str, page_num: int) -> str:
+    """Keep page markers and trim unwanted conversational prefix."""
+    text = (text or "").strip()
+    if not text:
+        return ""
+
+    marker = f"--- صفحة {page_num} ---"
+    if marker in text:
+        text = text[text.find(marker):]
+
+    text = re.sub(
+        r"\A(?:بالتأكيد|بالطبع|إليك|فيما يلي|بعد التصحيح|النص المصحح)[^\n]*\n",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    ).strip()
+
+    return text
+
+
+def format_page_with_gemini(client, page_num: int, raw_page_text: str) -> str:
+    """Format one page independently using Gemini API."""
+    prompt = _build_page_prompt(page_num, raw_page_text)
+
+    try:
+        response = client.models.generate_content(
+            model=CONFIG["gemini_model"],
+            contents=prompt,
+        )
+        result = _strip_unwanted_preamble(
+            getattr(response, "text", "") or "",
+            page_num,
+        )
+        if result:
+            return result
+
+        logger.warning(
+            "Gemini returned an empty result for page %d; keeping raw OCR.",
+            page_num,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Gemini failed on page %d: %s; keeping raw OCR.",
+            page_num,
+            exc,
+        )
+
+    return f"--- صفحة {page_num} ---\n{raw_page_text}"
+
+
 # ============================================================================
-# 1. تحميل الصفحات (PDF -> Images)
+# File loading - PDF/Image rendering (300 DPI)
 # ============================================================================
 def detect_file_type(file_path: str) -> str:
     ext = Path(file_path).suffix.lower()
@@ -90,8 +187,11 @@ def detect_file_type(file_path: str) -> str:
         return "text"
     return "unknown"
 
+
 def load_pages(input_path: str, dpi: int = 300):
-    """تحويل ملف الـ PDF/الصورة إلى صور PIL بوضوح 300 DPI مثل النوت بوك تماماً."""
+    """
+    Convert input into PIL RGB pages at 300 DPI using PyMuPDF.
+    """
     if not HAS_FITZ:
         raise RuntimeError("PyMuPDF (fitz) غير مثبت.")
 
@@ -102,54 +202,82 @@ def load_pages(input_path: str, dpi: int = 300):
         with fitz.open(input_path) as doc:
             for page in doc:
                 pix = page.get_pixmap(dpi=dpi)
-                img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
+                img = Image.open(
+                    io.BytesIO(pix.tobytes("png"))
+                ).convert("RGB")
                 pages.append(img)
+
     elif ext in {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tiff"}:
         pages = [Image.open(input_path).convert("RGB")]
+
     else:
-        raise ValueError(f"صيغة غير مدعومة: {ext}")
+        raise ValueError(
+            f"صيغة غير مدعومة في مسار OCR: {ext}. "
+            "يدعم PDF و JPG/JPEG/PNG."
+        )
 
     if not pages:
         raise ValueError("لم يتم استخراج أي صفحة من الملف.")
 
     return pages
 
+
 # ============================================================================
-# 2. الاستخراج المحلي (Tesseract OCR)
+# Local Tesseract OCR
 # ============================================================================
 def extract_text_local_ocr(pages) -> List[Dict]:
-    """استخراج النص سطر بسطر محلياً باستخدام Tesseract."""
+    """Extract OCR line-by-line using ara+eng and --oem 3 --psm 6."""
     if not HAS_TESSERACT:
-        raise RuntimeError("Tesseract غير متاح. يرجى تثبيت pytesseract و Tesseract-OCR.")
+        raise RuntimeError(
+            "Tesseract غير متاح. ثبّت pytesseract و Tesseract-OCR."
+        )
 
-    raw_ocr_data = []
+    raw_ocr_data: List[Dict] = []
     custom_config = CONFIG["tesseract_config"]
 
     for page_idx, page_image in enumerate(pages):
         page_number = page_idx + 1
-        logger.info(f"جاري معالجة الصفحة {page_number} من {len(pages)} محلياً...")
+        logger.info(
+            "جاري معالجة الصفحة %d من %d محلياً...",
+            page_number,
+            len(pages),
+        )
 
         try:
-            text = pytesseract.image_to_string(page_image, lang="ara+eng", config=custom_config)
-            lines = [line.strip() for line in text.split("\n") if line.strip()]
+            text = pytesseract.image_to_string(
+                page_image,
+                lang="ara+eng",
+                config=custom_config,
+            )
+
+            lines = [
+                line.strip()
+                for line in text.split("\n")
+                if line.strip()
+            ]
 
             for line_idx, line_text in enumerate(lines):
-                line_id = f"p{page_number}_l{line_idx + 1}"
                 raw_ocr_data.append({
                     "page": page_number,
-                    "line_id": line_id,
+                    "line_id": f"p{page_number}_l{line_idx + 1}",
                     "line_number": line_idx + 1,
                     "text": line_text,
                     "confidence": 1.0,
-                    "bbox": None
+                    "bbox": None,
                 })
-        except Exception as e:
-            logger.warning(f"⚠️ خطأ في معالجة الصفحة {page_number}: {e}")
+
+        except Exception as exc:
+            logger.warning(
+                "خطأ في معالجة الصفحة %d: %s",
+                page_number,
+                exc,
+            )
 
     return raw_ocr_data
 
+
 # ============================================================================
-# 3. حفظ البيانات الخام والنسخة المحمية (Immutable)
+# Persistence helpers
 # ============================================================================
 def save_raw_ocr(data: List[Dict], output_dir: str) -> Tuple[str, str]:
     output = Path(output_dir)
@@ -161,27 +289,36 @@ def save_raw_ocr(data: List[Dict], output_dir: str) -> Tuple[str, str]:
 
     raw_txt_path = output / "raw_ocr.txt"
     lines_by_page: Dict[int, List[Dict]] = {}
+
     for item in data:
         lines_by_page.setdefault(item["page"], []).append(item)
 
     with raw_txt_path.open("w", encoding="utf-8") as f:
-        for page in sorted(lines_by_page.keys()):
+        for page in sorted(lines_by_page):
             f.write(f"===== صفحة {page} =====\n")
-            for item in sorted(lines_by_page[page], key=lambda x: x["line_number"]):
+            for item in sorted(
+                lines_by_page[page],
+                key=lambda x: x["line_number"],
+            ):
                 f.write((item["text"] or "") + "\n")
             f.write("\n")
 
     return str(raw_json_path), str(raw_txt_path)
 
+
 # ============================================================================
-# 4. المعالجة والتنسيق عبر Gemini صفحة بصفحة
+# Page-by-page Gemini formatting
 # ============================================================================
-def clean_and_format_by_page(ocr_data: List[Dict], client=None, use_gemini: bool = True) -> str:
+def clean_and_format_by_page(
+    ocr_data: List[Dict],
+    client=None,
+    use_gemini: bool = True,
+) -> str:
     """
-    تجميع أسطر الـ OCR حسب رقم الصفحة، ثم إرسال كل صفحة مستقلة للـ LLM
-    لتفادي الاقتطاع وضمان إخراج كافة الصفحات بنفس تنسيق النوت بوك.
+    Group OCR lines by page and send every page independently to Gemini.
     """
     pages_dict: Dict[int, List[str]] = {}
+
     for item in ocr_data:
         pages_dict.setdefault(item["page"], []).append(item["text"])
 
@@ -191,57 +328,79 @@ def clean_and_format_by_page(ocr_data: List[Dict], client=None, use_gemini: bool
     if use_gemini and client is None:
         client = _get_gemini_client()
 
-    full_formatted_document = []
-    logger.info(f"بدء تنسيق وتدقيق {len(pages_dict)} صفحات عبر LLM صفحة بصفحة...")
+    full_formatted_document: List[str] = []
 
-    for page_num in sorted(pages_dict.keys()):
+    logger.info(
+        "بدء تنسيق وتدقيق %d صفحات عبر LLM صفحة بصفحة...",
+        len(pages_dict),
+    )
+
+    for page_num in sorted(pages_dict):
         lines = pages_dict[page_num]
         raw_page_text = "\n".join(lines)
 
-        logger.info(f"جاري تدقيق وتنسيق الصفحة {page_num} من {len(pages_dict)}...")
-
-        prompt = f"""
-أنت خبير تدقيق وتصحيح نصوص الـ OCR. أمامك النص الخام المستخرج من الصفحة رقم ({page_num}) من المستند.
-
-المطلوب منك بدقة:
-1. تصحيح الأخطاء الإملائية والمطبعية والكلمات المقطوعة الناتجة عن الـ OCR.
-2. إعادة تنسيق النص بأسلوب مرتب ومقروء (عناوين، بنود، فقرات).
-3. الحفاظ الكامل على جميع البيانات، الأسماء، الأرقام، والتواريخ دون اختصار أو حذف أي جزء.
-4. ابدأ استجابتك مباشرة بـ "--- صفحة {page_num} ---" ثم اتبعها بالنص المنسق دون كتابة أي مقدمات أو شروحات.
-
-النص الخام للصفحة {page_num}:
-{raw_page_text}
-""".strip()
+        logger.info(
+            "جاري تدقيق وتنسيق الصفحة %d من %d...",
+            page_num,
+            len(pages_dict),
+        )
 
         if use_gemini and client is not None:
-            try:
-                response = client.models.generate_content(
-                    model=CONFIG["gemini_model"],
-                    contents=prompt
-                )
-                page_output = (response.text or "").strip()
-                full_formatted_document.append(page_output)
-            except Exception as e:
-                logger.warning(f"❌ حدث خطأ أثناء معالجة الصفحة {page_num} عبر Gemini: {e}")
-                full_formatted_document.append(f"--- صفحة {page_num} ---\n{raw_page_text}")
+            page_output = format_page_with_gemini(
+                client,
+                page_num,
+                raw_page_text,
+            )
         else:
-            full_formatted_document.append(f"--- صفحة {page_num} ---\n{raw_page_text}")
+            page_output = f"--- صفحة {page_num} ---\n{raw_page_text}"
+
+        full_formatted_document.append(page_output)
 
     return "\n\n" + "\n\n".join(full_formatted_document)
+
 
 def save_formatted_document(text: str, output_dir: str) -> str:
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
+
     path = output / "formatted_document.txt"
     path.write_text(text, encoding="utf-8")
     return str(path)
 
+
 # ============================================================================
-# Main Public API Pipeline
+# Secondary Extractor Compatibility (Word / Plain text)
 # ============================================================================
-def extract(file_path: str, refine: bool = True, output_dir: str | None = None) -> dict:
+def extract_word(docx_path: str) -> List[str]:
+    if not HAS_DOCX:
+        raise RuntimeError("python-docx غير مثبت — لا يمكن قراءة ملفات Word.")
+
+    doc = docx.Document(docx_path)
+    text = "\n".join(
+        p.text for p in doc.paragraphs if p.text.strip()
+    )
+    return [text]
+
+
+def extract_plain_text(file_path: str) -> List[str]:
+    return [
+        Path(file_path).read_text(
+            encoding="utf-8",
+            errors="ignore",
+        )
+    ]
+
+
+# ============================================================================
+# Public API Entrypoint
+# ============================================================================
+def extract(
+    file_path: str,
+    refine: bool = True,
+    output_dir: str | None = None,
+) -> dict:
     """
-    المحرك الرئيسي لتشغيل مسار الـ OCR والتنسيق المطابق للنوت بوك.
+    Main extraction pipeline aligned with contracts_ocr_pipeline.ipynb.
     """
     path = Path(file_path)
     out_dir = output_dir or CONFIG["output_dir"]
@@ -268,58 +427,89 @@ def extract(file_path: str, refine: bool = True, output_dir: str | None = None) 
         result["errors"].append(f"الملف غير موجود: {file_path}")
         return result
 
+    if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
+        result["errors"].append(f"نوع ملف غير مدعوم: {path.suffix}")
+        return result
+
     try:
-        pages = load_pages(str(path), dpi=int(CONFIG["dpi"]))
-        result["metadata"]["num_pages"] = len(pages)
+        if path.suffix.lower() in {
+            ".pdf", ".png", ".jpg", ".jpeg",
+            ".bmp", ".webp", ".tiff",
+        }:
+            pages = load_pages(str(path), dpi=int(CONFIG["dpi"]))
+            result["metadata"]["num_pages"] = len(pages)
 
-        # 1. الاستخراج المحلي
-        raw_ocr_data = extract_text_local_ocr(pages)
-        result["raw_ocr_data"] = raw_ocr_data
+            raw_ocr_data = extract_text_local_ocr(pages)
+            result["raw_ocr_data"] = raw_ocr_data
 
-        if not raw_ocr_data:
-            result["errors"].append("لم يتم استخراج أي نص عبر Tesseract.")
-            return result
+            if not raw_ocr_data:
+                result["errors"].append("لم يتم استخراج أي نص محلياً عبر Tesseract.")
+                return result
 
-        # 2. حفظ المخرجات الخام والـ Immutable Copy
-        raw_json_path, raw_txt_path = save_raw_ocr(raw_ocr_data, out_dir)
-        RAW_OCR_IMMUTABLE = copy.deepcopy(raw_ocr_data)
+            raw_json_path, raw_txt_path = save_raw_ocr(raw_ocr_data, out_dir)
+            RAW_OCR_IMMUTABLE = copy.deepcopy(raw_ocr_data)
 
-        raw_pages: Dict[int, List[str]] = {}
-        for item in raw_ocr_data:
-            raw_pages.setdefault(item["page"], []).append(item["text"])
-        
-        raw_text = "\n\n".join("\n".join(raw_pages[p]) for p in sorted(raw_pages))
-        result["raw_text"] = raw_text
+            raw_pages: Dict[int, List[str]] = {}
+            for item in raw_ocr_data:
+                raw_pages.setdefault(item["page"], []).append(item["text"])
 
-        # 3. التنسيق والتدقيق عبر Gemini
-        use_gemini = bool(refine)
-        client = _get_gemini_client() if use_gemini else None
+            raw_text = "\n\n".join(
+                "\n".join(raw_pages[p])
+                for p in sorted(raw_pages)
+            )
+            result["raw_text"] = raw_text
 
-        formatted_document_text = clean_and_format_by_page(
-            RAW_OCR_IMMUTABLE,
-            client=client,
-            use_gemini=use_gemini
-        )
+            use_gemini = bool(refine)
+            client = _get_gemini_client() if use_gemini else None
 
-        formatted_path = save_formatted_document(formatted_document_text, out_dir)
+            if use_gemini and client is None:
+                logger.warning(
+                    "GEMINI_API_KEY غير متاح؛ سيتم الاحتفاظ بالنص الخام."
+                )
 
-        # 4. تعبئة المخرجات ومتغيرات الشات بوت للتربيط
-        FINAL_CHATBOT_CONTEXT = formatted_document_text
+            formatted_text = clean_and_format_by_page(
+                RAW_OCR_IMMUTABLE,
+                client=client,
+                use_gemini=use_gemini,
+            )
 
-        result["formatted_text"] = formatted_document_text
-        result["clean_text"] = formatted_document_text
-        result["FINAL_CHATBOT_CONTEXT"] = FINAL_CHATBOT_CONTEXT
-        result["RAW_OCR_IMMUTABLE"] = RAW_OCR_IMMUTABLE
+            formatted_path = save_formatted_document(formatted_text, out_dir)
 
-        result["metadata"]["method"] = (
-            "tesseract_ocr+gemini_page_format"
-            if use_gemini and client is not None
-            else "tesseract_ocr"
-        )
-        result["metadata"]["gemini_used"] = bool(use_gemini and client is not None)
-        result["metadata"]["raw_json_path"] = raw_json_path
-        result["metadata"]["raw_txt_path"] = raw_txt_path
-        result["metadata"]["formatted_output_path"] = formatted_path
+            # المفاتيح المتوافقة مع مرحلة RAG / Chatbot
+            FINAL_CHATBOT_CONTEXT = formatted_text
+
+            result["formatted_text"] = formatted_text
+            result["clean_text"] = formatted_text
+            result["FINAL_CHATBOT_CONTEXT"] = FINAL_CHATBOT_CONTEXT
+            result["RAW_OCR_IMMUTABLE"] = RAW_OCR_IMMUTABLE
+
+            result["metadata"]["method"] = (
+                "tesseract_ocr+gemini_page_format"
+                if use_gemini and client is not None
+                else "tesseract_ocr"
+            )
+            result["metadata"]["gemini_used"] = bool(use_gemini and client is not None)
+            result["metadata"]["raw_json_path"] = raw_json_path
+            result["metadata"]["raw_txt_path"] = raw_txt_path
+            result["metadata"]["formatted_output_path"] = formatted_path
+
+        elif path.suffix.lower() in {".docx", ".doc"}:
+            pages = extract_word(str(path))
+            result["metadata"]["num_pages"] = 1
+            result["raw_text"] = pages[0]
+            result["formatted_text"] = pages[0]
+            result["clean_text"] = pages[0]
+            result["FINAL_CHATBOT_CONTEXT"] = pages[0]
+            result["metadata"]["method"] = "docx_direct"
+
+        elif path.suffix.lower() in {".txt", ".csv", ".json"}:
+            pages = extract_plain_text(str(path))
+            result["metadata"]["num_pages"] = 1
+            result["raw_text"] = pages[0]
+            result["formatted_text"] = pages[0]
+            result["clean_text"] = pages[0]
+            result["FINAL_CHATBOT_CONTEXT"] = pages[0]
+            result["metadata"]["method"] = "plain_text"
 
         result["status"] = "ok"
         return result
@@ -328,3 +518,14 @@ def extract(file_path: str, refine: bool = True, output_dir: str | None = None) 
         logger.exception("فشل مسار الـ OCR والتدقيق للملف %s", file_path)
         result["errors"].append(str(exc))
         return result
+
+
+if __name__ == "__main__":
+    import sys
+
+    if len(sys.argv) < 2:
+        print("usage: python -m modules.ocr <file>")
+        sys.exit(1)
+
+    res = extract(sys.argv[1])
+    print(json.dumps(res, ensure_ascii=False, indent=2)[:4000])
