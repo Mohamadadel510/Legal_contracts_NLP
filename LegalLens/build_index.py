@@ -1,8 +1,8 @@
 # ============================================================
-# LegalLens — Build Legal Retrieval Index
+# LegalLens — Build Index from legal_corpus.pkl
 #
 # Input:
-#   data/laws.jsonl
+#   data/legal_corpus.pkl
 #
 # Output:
 #   index/qdrant_export/
@@ -13,14 +13,14 @@
 #   BAAI/bge-m3
 #
 # Similarity:
-#   Cosine similarity
+#   Cosine
 # ============================================================
 
 from __future__ import annotations
 
 import json
 import os
-import shutil
+import pickle
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -42,7 +42,9 @@ INDEX_DIR = (
     / "qdrant_export"
 )
 
-LAWS_PATH = DATA_DIR / "laws.jsonl"
+CORPUS_PATH = (
+    DATA_DIR / "legal_corpus.pkl"
+)
 
 OUTPUT_POINTS = (
     INDEX_DIR
@@ -66,7 +68,7 @@ MODEL_NAME = os.getenv(
 
 BATCH_SIZE = 8
 
-EMBEDDING_DIMENSION = 1024
+EXPECTED_DIMENSION = 1024
 
 COLLECTION_NAME = (
     "legallens_legal_only"
@@ -74,178 +76,197 @@ COLLECTION_NAME = (
 
 
 # ============================================================
-# VALIDATION
+# LOAD CORPUS
 # ============================================================
 
-REQUIRED_FIELDS = {
-    "law_id",
-    "law_name",
-    "article_number",
-    "article_text",
-    "is_active",
-}
+def load_corpus():
 
-
-# ============================================================
-# LOAD LAWS
-# ============================================================
-
-def load_laws():
-
-    if not LAWS_PATH.exists():
+    if not CORPUS_PATH.exists():
 
         raise FileNotFoundError(
             f"""
-❌ laws.jsonl not found:
+❌ legal_corpus.pkl not found:
 
-{LAWS_PATH}
+{CORPUS_PATH}
 
-Expected structure:
+Expected:
 
 LegalLens/
 ├── data/
-│   └── laws.jsonl
+│   └── legal_corpus.pkl
 └── build_index.py
 """
         )
 
-    documents = []
+    print(
+        "📂 Loading legal_corpus.pkl..."
+    )
 
     with open(
-        LAWS_PATH,
-        "r",
-        encoding="utf-8"
+        CORPUS_PATH,
+        "rb"
     ) as f:
 
-        for line_number, line in enumerate(
-            f,
-            start=1
-        ):
+        corpus = pickle.load(f)
 
-            line = line.strip()
+    if not isinstance(
+        corpus,
+        list
+    ):
 
-            if not line:
-                continue
+        raise ValueError(
+            "❌ legal_corpus.pkl must contain a list."
+        )
 
-            try:
+    print(
+        f"Loaded records: {len(corpus)}"
+    )
 
-                item = json.loads(line)
-
-            except json.JSONDecodeError as e:
-
-                raise ValueError(
-                    f"❌ Invalid JSON at line "
-                    f"{line_number}: {e}"
-                )
-
-            missing = (
-                REQUIRED_FIELDS
-                - set(item.keys())
-            )
-
-            if missing:
-
-                raise ValueError(
-                    f"❌ Missing fields at line "
-                    f"{line_number}: "
-                    f"{sorted(missing)}"
-                )
-
-            documents.append(item)
-
-    return documents
+    return corpus
 
 
 # ============================================================
-# FILTER ACTIVE LEGAL ARTICLES
+# PREPARE LEGAL ARTICLES
 # ============================================================
 
-def prepare_documents(documents):
+def prepare_documents(corpus):
 
-    legal_documents = []
+    documents = []
 
     seen = set()
 
-    for item in documents:
+    for item in corpus:
+
+        if not isinstance(
+            item,
+            dict
+        ):
+            continue
 
         # ----------------------------------------------------
-        # Only active articles
+        # Legal articles only
         # ----------------------------------------------------
 
-        is_active = item.get(
-            "is_active",
-            True
+        doc_type = item.get(
+            "doc_type",
+            "legal_article"
         )
 
-        if not is_active:
+        if doc_type != "legal_article":
+            continue
+
+        # ----------------------------------------------------
+        # Active articles only
+        # ----------------------------------------------------
+
+        if item.get(
+            "is_active",
+            True
+        ) is False:
+
             continue
 
         law_id = str(
-            item["law_id"]
-        ).strip()
-
-        article_number = str(
-            item["article_number"]
-        ).strip()
-
-        article_text = str(
-            item["article_text"]
+            item.get(
+                "law_id",
+                ""
+            )
         ).strip()
 
         law_name = str(
-            item["law_name"]
+            item.get(
+                "law_name",
+                ""
+            )
         ).strip()
+
+        article = str(
+            item.get(
+                "article",
+                item.get(
+                    "article_number",
+                    ""
+                )
+            )
+        ).strip()
+
+        text = str(
+            item.get(
+                "text",
+                item.get(
+                    "article_text",
+                    ""
+                )
+            )
+        ).strip()
+
+        source = str(
+            item.get(
+                "source",
+                ""
+            )
+        ).strip()
+
+        # ----------------------------------------------------
+        # Required fields
+        # ----------------------------------------------------
 
         if not law_id:
             continue
 
-        if not article_number:
+        if not article:
             continue
 
-        if not article_text:
+        if not text:
             continue
 
         # ----------------------------------------------------
-        # Unique article ID
+        # Duplicate check
         # ----------------------------------------------------
 
         key = (
             law_id,
-            article_number
+            article
         )
 
         if key in seen:
 
             raise ValueError(
-                "❌ Duplicate article detected: "
-                f"{law_id} / {article_number}"
+                f"❌ Duplicate article:\n"
+                f"{law_id} / {article}"
             )
 
         seen.add(key)
 
-        legal_documents.append(
+        documents.append(
             {
-                "law_id": law_id,
+                "law_id":
+                    law_id,
 
-                "law_name": law_name,
+                "law_name":
+                    law_name,
 
                 "article_number":
-                    article_number,
+                    article,
 
                 "article_text":
-                    article_text,
+                    text,
 
-                "is_active": True,
+                "is_active":
+                    True,
 
                 "source":
-                    item.get(
-                        "source",
-                        ""
-                    ),
+                    source
             }
         )
 
-    return legal_documents
+    if not documents:
+
+        raise ValueError(
+            "❌ No legal articles found."
+        )
+
+    return documents
 
 
 # ============================================================
@@ -255,11 +276,6 @@ def prepare_documents(documents):
 def build_embedding_text(
     document
 ):
-
-    # We intentionally embed the legal article itself.
-    #
-    # Including the law name helps distinguish articles
-    # belonging to different laws.
 
     return (
         f"القانون: "
@@ -276,43 +292,30 @@ def build_embedding_text(
 
 def build_index():
 
-    print("=" * 80)
+    print("=" * 90)
     print("LEGALLENS — BUILD FINAL LEGAL INDEX")
-    print("=" * 80)
+    print("=" * 90)
 
     # --------------------------------------------------------
-    # Load
+    # 1. Load corpus
     # --------------------------------------------------------
 
-    print("\n📂 Loading laws.jsonl...")
-
-    all_documents = load_laws()
-
-    print(
-        f"Loaded records: {len(all_documents)}"
-    )
+    corpus = load_corpus()
 
     # --------------------------------------------------------
-    # Prepare active legal articles
+    # 2. Prepare legal articles
     # --------------------------------------------------------
 
     documents = prepare_documents(
-        all_documents
+        corpus
     )
 
     print(
-        f"Active legal articles: "
-        f"{len(documents)}"
+        f"Legal articles: {len(documents)}"
     )
 
-    if not documents:
-
-        raise ValueError(
-            "❌ No active legal articles found."
-        )
-
     # --------------------------------------------------------
-    # Output directory
+    # 3. Create output directory
     # --------------------------------------------------------
 
     INDEX_DIR.mkdir(
@@ -321,10 +324,12 @@ def build_index():
     )
 
     # --------------------------------------------------------
-    # Load BGE-M3
+    # 4. Load BGE-M3
     # --------------------------------------------------------
 
-    print("\n🤖 Loading embedding model...")
+    print(
+        "\n🤖 Loading embedding model..."
+    )
 
     model = SentenceTransformer(
         MODEL_NAME
@@ -335,7 +340,7 @@ def build_index():
     )
 
     # --------------------------------------------------------
-    # Prepare texts
+    # 5. Prepare texts
     # --------------------------------------------------------
 
     texts = [
@@ -344,10 +349,12 @@ def build_index():
     ]
 
     # --------------------------------------------------------
-    # Generate embeddings
+    # 6. Generate embeddings
     # --------------------------------------------------------
 
-    print("\n🧠 Generating embeddings...")
+    print(
+        "\n🧠 Generating embeddings..."
+    )
 
     embeddings = model.encode(
         texts,
@@ -363,34 +370,42 @@ def build_index():
     )
 
     # --------------------------------------------------------
-    # Validate dimensions
+    # 7. Validate embeddings
     # --------------------------------------------------------
 
     if embeddings.ndim != 2:
 
         raise ValueError(
-            "❌ Invalid embedding matrix shape: "
+            f"❌ Invalid embedding shape: "
             f"{embeddings.shape}"
         )
 
-    if embeddings.shape[1] != EMBEDDING_DIMENSION:
+    if embeddings.shape[1] != EXPECTED_DIMENSION:
 
         raise ValueError(
-            "❌ Unexpected embedding dimension: "
-            f"{embeddings.shape[1]} "
-            f"(expected {EMBEDDING_DIMENSION})"
+            f"❌ Expected {EXPECTED_DIMENSION} dimensions, "
+            f"got {embeddings.shape[1]}"
+        )
+
+    if not np.isfinite(
+        embeddings
+    ).all():
+
+        raise ValueError(
+            "❌ Embeddings contain NaN or Inf."
         )
 
     print(
-        f"Embedding matrix: "
-        f"{embeddings.shape}"
+        f"Embedding matrix: {embeddings.shape}"
     )
 
     # --------------------------------------------------------
-    # Build exported points
+    # 8. Build Qdrant-compatible points
     # --------------------------------------------------------
 
-    print("\n📦 Building Qdrant-compatible points...")
+    print(
+        "\n📦 Building points..."
+    )
 
     points = []
 
@@ -404,47 +419,53 @@ def build_index():
         )
     ):
 
-        point = {
+        points.append(
+            {
+                "id": idx,
 
-            "id": idx,
+                "vector":
+                    vector.tolist(),
 
-            "vector": vector.tolist(),
+                "payload":
+                    {
+                        "law_id":
+                            document["law_id"],
 
-            "payload": {
+                        "law_name":
+                            document["law_name"],
 
-                "law_id":
-                    document["law_id"],
+                        "article":
+                            document[
+                                "article_number"
+                            ],
 
-                "law_name":
-                    document["law_name"],
+                        "text":
+                            document[
+                                "article_text"
+                            ],
 
-                "article":
-                    document["article_number"],
+                        "source":
+                            document.get(
+                                "source",
+                                ""
+                            ),
 
-                "text":
-                    document["article_text"],
+                        "doc_type":
+                            "legal_article",
 
-                "source":
-                    document.get(
-                        "source",
-                        ""
-                    ),
-
-                "doc_type":
-                    "legal_article",
-
-                "is_active":
-                    True
+                        "is_active":
+                            True
+                    }
             }
-        }
-
-        points.append(point)
+        )
 
     # --------------------------------------------------------
-    # Save points
+    # 9. Save points
     # --------------------------------------------------------
 
-    print("\n💾 Saving points...")
+    print(
+        "\n💾 Saving Qdrant export..."
+    )
 
     with open(
         OUTPUT_POINTS,
@@ -463,7 +484,7 @@ def build_index():
         )
 
     # --------------------------------------------------------
-    # Collection configuration
+    # 10. Save configuration
     # --------------------------------------------------------
 
     config = {
@@ -471,31 +492,31 @@ def build_index():
         "collection_name":
             COLLECTION_NAME,
 
-        "distance":
-            "Cosine",
-
-        "vector_size":
-            EMBEDDING_DIMENSION,
-
         "embedding_model":
             MODEL_NAME,
+
+        "vector_size":
+            EXPECTED_DIMENSION,
+
+        "distance":
+            "Cosine",
 
         "documents":
             len(documents),
 
         "source":
-            "data/laws.jsonl",
-
-        "created_at":
-            datetime.now(
-                timezone.utc
-            ).isoformat(),
+            "data/legal_corpus.pkl",
 
         "normalized_embeddings":
             True,
 
         "doc_type":
-            "legal_article"
+            "legal_article",
+
+        "created_at":
+            datetime.now(
+                timezone.utc
+            ).isoformat()
     }
 
     with open(
@@ -512,7 +533,7 @@ def build_index():
         )
 
     # --------------------------------------------------------
-    # Final validation
+    # 11. Final report
     # --------------------------------------------------------
 
     points_size = (
@@ -520,12 +541,12 @@ def build_index():
         / (1024 ** 2)
     )
 
-    print("\n" + "=" * 80)
-    print("✅ FINAL INDEX BUILD COMPLETED")
-    print("=" * 80)
+    print("\n" + "=" * 90)
+    print("✅ LEGALLENS INDEX BUILD COMPLETED")
+    print("=" * 90)
 
     print(
-        f"Legal articles : {len(documents)}"
+        f"Articles       : {len(documents)}"
     )
 
     print(
@@ -541,22 +562,22 @@ def build_index():
     )
 
     print(
-        f"Similarity      : Cosine"
+        "Similarity     : Cosine"
     )
 
     print(
-        f"Points file     : {OUTPUT_POINTS}"
+        f"Points file    : {OUTPUT_POINTS}"
     )
 
     print(
-        f"Points size     : {points_size:.2f} MB"
+        f"Points size    : {points_size:.2f} MB"
     )
 
     print(
-        f"Config file     : {OUTPUT_CONFIG}"
+        f"Config file    : {OUTPUT_CONFIG}"
     )
 
-    print("=" * 80)
+    print("=" * 90)
 
 
 # ============================================================
