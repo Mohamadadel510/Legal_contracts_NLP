@@ -1,0 +1,141 @@
+
+============================================================
+LEGALLENS FINAL PROJECT STATUS
+============================================================
+
+Backup created:
+2026-09-10T15:27:38.738928
+
+============================================================
+CORPUS
+============================================================
+
+Legal laws:
+5
+
+Legal articles:
+2443
+
+Active articles:
+2378
+
+Repealed articles:
+65
+
+Contract templates:
+25
+
+Unified corpus:
+2468
+
+============================================================
+EMBEDDINGS
+============================================================
+
+Model:
+BAAI/bge-m3
+
+Dimension:
+1024
+
+Vector database:
+Qdrant
+
+Final collection:
+legallens_legal_only
+
+Final legal points:
+2443
+
+============================================================
+FINAL RETRIEVER
+============================================================
+
+Type:
+Dense semantic retrieval
+
+Embedding:
+BGE-M3
+
+Database:
+Legal-only Qdrant
+
+Top-K:
+5
+
+BM25:
+Not used in final retriever
+
+RRF:
+Not used
+
+Article neighbors:
+Not used
+
+============================================================
+BEST VALIDATED BENCHMARK
+============================================================
+
+Recall@5:
+0.3697
+
+Recall@10:
+0.4833
+
+MRR:
+0.6727
+
+Hit@5:
+0.8182
+
+Hit@10:
+0.8182
+
+============================================================
+RAG PIPELINE
+============================================================
+
+User Query
+    ->
+BGE-M3
+    ->
+Legal-only Qdrant
+    ->
+Top-K Legal Articles
+    ->
+Context Builder
+    ->
+Grounded Legal Prompt
+    ->
+LLM
+    ->
+Legal Answer + Sources
+
+============================================================
+STATUS
+============================================================
+
+Retrieval:
+READY
+
+Context Builder:
+READY
+
+Prompt:
+READY
+
+LLM Generation:
+NOT CONNECTED
+(API key not available in current Colab session)
+
+============================================================
+IMPORTANT
+============================================================
+
+Do NOT delete the Qdrant database.
+
+Do NOT delete the legal corpus.
+
+Do NOT regenerate embeddings unless necessary.
+
+The final validated retriever is Dense BGE-M3 + Legal-only Qdrant.
