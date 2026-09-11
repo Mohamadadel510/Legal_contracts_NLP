@@ -288,64 +288,73 @@ def _ocr_image(pil_img) -> str:
 # ==========================================================================
 # Extraction per file type
 # ==========================================================================
-def extract_pdf_ocr(pdf_path: str, dpi: int = 300, refine: bool = True) -> List[str]:
-    """Rasterise then OCR - for scanned PDFs. Needs Tesseract."""
-    images = rasterize_pdf(pdf_path, dpi=dpi)
-    logger.info("OCR over %d page(s)", len(images))
+def extract(file_path: str, refine: bool = True) -> dict:
+    path = Path(file_path)
+    result = {
+        "status": "error",
+        "metadata": {
+            "file_name": path.name,
+            "file_type": detect_file_type(file_path),
+            "num_pages": 0,
+            "method": None,
+            "num_clauses": 0,
+        },
+        "raw_text": "",
+        "clean_text": "",
+        "clauses": [],
+        "errors": [],
+    }
 
-    page_texts = []
-    for i, img in enumerate(images):
-        text = repair_scan_artifacts(_ocr_image(img))
-        # تم إزالة الاستدعاء المباشر لـ refine_text_with_groq لتجنب معالجة النص مرتين
-        page_texts.append(text)
-        logger.info("  page %d/%d done", i + 1, len(images))
-    return page_texts
+    if not path.exists():
+        result["errors"].append(f"الملف غير موجود: {file_path}")
+        return result
 
+    if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
+        result["errors"].append(f"نوع ملف غير مدعوم: {path.suffix}")
+        return result
 
-def extract_image(image_path: str, refine: bool = True) -> List[str]:
-    img = Image.open(image_path)
-    text = repair_scan_artifacts(_ocr_image(img))
-    # إرجاع النص الخام المعدل أولياً فقط
-    return [text]
+    try:
+        # 1. استخراج النص الخام من الملف
+        page_texts, method, page_count = extract_document_text(file_path, refine=refine)
+    except Exception as exc:
+        result["errors"].append(str(exc))
+        return result
 
+    raw_text = PAGE_SEPARATOR.join(p for p in page_texts if p and p.strip())
+    if not raw_text.strip():
+        result["metadata"]["method"] = method
+        result["errors"].append(
+            "تمت المعالجة لكن لم يُعثر على نص قابل للقراءة داخل الملف."
+        )
+        return result
 
-def extract_word(docx_path: str) -> List[str]:
-    if not HAS_DOCX:
-        raise RuntimeError("python-docx غير مثبت — لا يمكن قراءة ملفات Word.")
-    doc = docx.Document(docx_path)
-    return ["\n".join(p.text for p in doc.paragraphs if p.text.strip())]
+    # 2. معالجة مشكلات السطور والمسافات المبدئية
+    repaired = repair_scan_artifacts(raw_text)
+    damage = scan_damage_ratio(repaired)
+    result["metadata"]["damage_ratio"] = round(damage, 3)
 
+    # 3. إجبار التمرير على الـ LLM لمعالجة وتنقيتها دائماً
+    if refine:
+        logger.info("Forcing Groq LLM refinement for extracted text...")
+        method = f"{method}+llm_refined"
+        repaired = refine_text_with_groq(repaired)
 
-def extract_plain_text(file_path: str) -> List[str]:
-    return [Path(file_path).read_text(encoding="utf-8", errors="ignore")]
+    # 4. تنظيف النص النهائي وتقسيمه إلى بنود قانونية
+    clean_text = clean_arabic_text(repaired)
+    clauses = segment_legal_clauses(clean_text)
 
-
-def extract_document_text(file_path: str, refine: bool = True) -> Tuple[List[str], str, int]:
-    """Dispatch on file type. Returns (page_texts, method, page_count)."""
-    file_type = detect_file_type(file_path)
-
-    if file_type == "pdf":
-        pages = extract_pdf_text_layer(file_path)
-        if pages:
-            logger.info("PDF text layer found - extraction done")
-            return pages, "pymupdf_text_layer", len(pages)
-        logger.info("No usable text layer - falling back to OCR")
-        pages = extract_pdf_ocr(pdf_path=file_path, refine=refine)
-        return pages, "tesseract_ocr", len(pages)
-
-    if file_type == "image":
-        pages = extract_image(image_path=file_path, refine=refine)
-        return pages, "tesseract_image", 1
-
-    if file_type == "word":
-        pages = extract_word(docx_path=file_path)
-        return pages, "docx_direct", 1
-
-    if file_type == "text":
-        pages = extract_plain_text(file_path=file_path)
-        return pages, "plain_text", 1
-
-    raise ValueError(f"نوع ملف غير مدعوم: {Path(file_path).suffix or file_path}")
+    result.update({
+        "status": "ok",
+        "raw_text": raw_text,
+        "clean_text": clean_text,
+        "clauses": clauses,
+    })
+    result["metadata"].update({
+        "num_pages": page_count,
+        "method": method,
+        "num_clauses": len(clauses),
+    })
+    return result
 
 # ==========================================================================
 # Arabic cleaning
