@@ -8,7 +8,7 @@
 streamlit>=1.36
 
 # --- Stage 1: OCR / text preparation ---
-pymupdf>=1.24          # PDF text layer - no external binary needed
+pymupdf>=1.24         # PDF text layer - no external binary needed
 python-docx>=1.1
 pillow>=10.0
 opencv-python>=4.9     # contrast boost before OCR
@@ -28,6 +28,12 @@ huggingface-hub>=0.20
 groq>=0.11             # hosted provider (default)
 ollama>=0.3.0          # local provider (CONTRACT_AI_PROVIDER=ollama)
 pydantic>=2.0
+
+# --- PDF Export & Arabic Shaping ---
+fpdf2>=2.7
+reportlab>=4.0
+arabic-reshaper>=3.0
+python-bidi>=0.4.2
 
 # --- Config ---
 python-dotenv>=1.0
