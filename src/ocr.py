@@ -288,55 +288,6 @@ def _ocr_image(pil_img) -> str:
 # ==========================================================================
 # Extraction per file type
 # ==========================================================================
-def extract_pdf_text_layer(pdf_path: str) -> List[str]:
-    """Read an existing PDF text layer. Returns [] when there isn't a usable one."""
-    if not HAS_FITZ:
-        return []
-    try:
-        with fitz.open(pdf_path) as doc:
-            pages = [page.get_text("text") or "" for page in doc]
-    except Exception as exc:
-        logger.warning("PyMuPDF could not read %s: %s", pdf_path, exc)
-        return []
-
-    if sum(len(p.strip()) for p in pages) < MIN_TEXT_LAYER_CHARS:
-        return []
-    return pages
-
-
-def rasterize_pdf(pdf_path: str, dpi: int = 300) -> List["Image.Image"]:
-    """Render each PDF page to an image.
-
-    PyMuPDF first: it is already a dependency (the text-layer path uses it) and
-    it renders in-process, so a scanned PDF no longer needs Poppler installed
-    on the machine - which was the one system package standing between this
-    pipeline and a plain `pip install`. pdf2image stays as a fallback for the
-    rare file PyMuPDF cannot render.
-    """
-    if HAS_FITZ:
-        try:
-            images = []
-            with fitz.open(pdf_path) as doc:
-                for page in doc:
-                    pix = page.get_pixmap(dpi=dpi)
-                    images.append(
-                        Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
-                    )
-            if images:
-                return images
-            logger.warning("PyMuPDF rendered no pages from %s", pdf_path)
-        except Exception as exc:  # noqa: BLE001 - fall through to pdf2image
-            logger.warning("PyMuPDF could not rasterise %s: %s", pdf_path, exc)
-
-    if HAS_PDF2IMAGE:
-        return convert_from_path(pdf_path, dpi=dpi)
-
-    raise RuntimeError(
-        "تعذر تحويل ملف PDF إلى صور: PyMuPDF غير متاح ولا pdf2image. "
-        "ثبّت pymupdf عبر pip."
-    )
-
-
 def extract_pdf_ocr(pdf_path: str, dpi: int = 300, refine: bool = True) -> List[str]:
     """Rasterise then OCR - for scanned PDFs. Needs Tesseract."""
     images = rasterize_pdf(pdf_path, dpi=dpi)
@@ -345,7 +296,8 @@ def extract_pdf_ocr(pdf_path: str, dpi: int = 300, refine: bool = True) -> List[
     page_texts = []
     for i, img in enumerate(images):
         text = repair_scan_artifacts(_ocr_image(img))
-        page_texts.append(refine_text_with_groq(text) if refine else text)
+        # تم إزالة الاستدعاء المباشر لـ refine_text_with_groq لتجنب معالجة النص مرتين
+        page_texts.append(text)
         logger.info("  page %d/%d done", i + 1, len(images))
     return page_texts
 
@@ -353,7 +305,8 @@ def extract_pdf_ocr(pdf_path: str, dpi: int = 300, refine: bool = True) -> List[
 def extract_image(image_path: str, refine: bool = True) -> List[str]:
     img = Image.open(image_path)
     text = repair_scan_artifacts(_ocr_image(img))
-    return [refine_text_with_groq(text) if refine else text]
+    # إرجاع النص الخام المعدل أولياً فقط
+    return [text]
 
 
 def extract_word(docx_path: str) -> List[str]:
@@ -374,26 +327,25 @@ def extract_document_text(file_path: str, refine: bool = True) -> Tuple[List[str
     if file_type == "pdf":
         pages = extract_pdf_text_layer(file_path)
         if pages:
-            logger.info("PDF text layer found - skipping OCR")
+            logger.info("PDF text layer found - extraction done")
             return pages, "pymupdf_text_layer", len(pages)
         logger.info("No usable text layer - falling back to OCR")
-        pages = extract_pdf_ocr(file_path, refine=refine)
+        pages = extract_pdf_ocr(pdf_path=file_path, refine=refine)
         return pages, "tesseract_ocr", len(pages)
 
     if file_type == "image":
-        pages = extract_image(file_path, refine=refine)
+        pages = extract_image(image_path=file_path, refine=refine)
         return pages, "tesseract_image", 1
 
     if file_type == "word":
-        pages = extract_word(file_path)
+        pages = extract_word(docx_path=file_path)
         return pages, "docx_direct", 1
 
     if file_type == "text":
-        pages = extract_plain_text(file_path)
+        pages = extract_plain_text(file_path=file_path)
         return pages, "plain_text", 1
 
     raise ValueError(f"نوع ملف غير مدعوم: {Path(file_path).suffix or file_path}")
-
 
 # ==========================================================================
 # Arabic cleaning
