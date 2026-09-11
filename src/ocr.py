@@ -10,9 +10,6 @@ everything that tied it to Colab:
   * PDFs with a real text layer go through PyMuPDF first.
   * Tesseract and Groq are optional. Missing either degrades the result,
     it does not raise.
-
-Public API:
-    extract(file_path) -> dict
 """
 from __future__ import annotations
 
@@ -23,12 +20,6 @@ import logging
 import unicodedata
 from pathlib import Path
 from typing import List, Tuple
-import pytesseract
-
-# تحديد مسار التثبيت المباشر لمحرك Tesseract على نظام ويندوز
-tesseract_path = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-os.environ["TESSERACT_CMD"] = tesseract_path
-pytesseract.pytesseract.tesseract_cmd = tesseract_path
 
 logger = logging.getLogger("contract_ai.ocr")
 
@@ -50,10 +41,20 @@ except ImportError:
 
 try:
     import pytesseract
-    _tess_cmd = os.environ.get("TESSERACT_CMD")
-    if _tess_cmd:
-        pytesseract.pytesseract.tesseract_cmd = _tess_cmd
     HAS_TESSERACT = True
+    # FIX: كان في السابق مسار ويندوز مثبّت إجباريًا (hardcoded) خارج أي شرط،
+    # وده بيكسر Tesseract تمامًا على أي بيئة مش ويندوز (لينكس/سيرفر/دوكر).
+    # دلوقتي بنقرأ المسار (لو موجود) من متغير بيئة TESSERACT_CMD فقط،
+    # ولو مش موجود بنسيب pytesseract يدوّر عليه لوحده في الـ PATH.
+    _tess_cmd = os.environ.get("TESSERACT_CMD")
+    if _tess_cmd and os.path.exists(_tess_cmd):
+        pytesseract.pytesseract.tesseract_cmd = _tess_cmd
+    elif _tess_cmd:
+        logger.warning(
+            "TESSERACT_CMD=%s لكن الملف مش موجود في هذا المسار - "
+            "هستخدم tesseract من الـ PATH العادي بدل ما أفشل بصمت.",
+            _tess_cmd,
+        )
 except ImportError:
     HAS_TESSERACT = False
 
@@ -122,6 +123,14 @@ GROQ_TEXT_MODELS = [
 # تم تكبير سعة المقطع لضمان استيعاب البنود كاملة وعدم فصل السياق أثناء التنظيف
 MAX_REFINE_CHARS = 3500
 
+# FIX: النص المشوَّه اللي طالع من الـ OCR بيكون فيه تكرار وتباعد حروف كتير
+# (كل كلمة بتتقطع لحروف منفصلة)، فطوله بالحروف بيبقى أكبر بكتير من النص
+# ده لو اتصحح صح. النص النضيف من Groq (بنود مرتبة + نقط بدل البيانات الناقصة)
+# بيبقى طبيعي جدًا إنه أقصر من النص الخام بنسبة كبيرة. الحد القديم (0.4) كان
+# بيرفض أي تصحيح ناجح لمجرد إنه أقصر، ويرجّع النص الخام المشوَّه زي ما هو -
+# وده هو سبب ظهور النص بالشكل الأول بدل الشكل النظيف.
+MIN_REFINED_RATIO = 0.15
+
 _REFINE_PROMPT = """أنت خبير في تدقيق وإعادة إعمار العقود والنصوص القانونية العربية الممسوخة بواسطة محركات الـ OCR.
 
 المطلوب منك:
@@ -184,6 +193,7 @@ def _strip_preamble(text: str) -> str:
 
 
 def _refine_chunk(client, text: str) -> str:
+    last_errors = []
     for model_name in GROQ_TEXT_MODELS:
         try:
             response = client.chat.completions.create(
@@ -193,11 +203,27 @@ def _refine_chunk(client, text: str) -> str:
                 temperature=0.0,
             )
             result = _strip_preamble(response.choices[0].message.content or "")
-            if result and len(result) >= len(text) * 0.4:
+
+            # FIX: الحد الأدنى بقى نسبي وأقل تشددًا (0.15 بدل 0.4)، لأن النص
+            # المصحح المفروض يبقى أقصر من الخام المشوَّه بطبيعته.
+            if result and len(result) >= len(text) * MIN_REFINED_RATIO:
                 return result
-            logger.warning("Refinement from %s looked truncated; keeping raw", model_name)
+
+            logger.warning(
+                "تجاهلت نتيجة %s: طولها %d حرف مقابل %d حرف في الأصل (أقل من الحد %.0f%%)",
+                model_name, len(result), len(text), MIN_REFINED_RATIO * 100,
+            )
         except Exception as exc:
-            logger.warning("Groq model %s failed: %s", model_name, exc)
+            # FIX: بنسجل اسم الموديل مع رسالة الخطأ الفعلية بدل ما نبلعها بصمت،
+            # عشان لو فيه مشكلة مفتاح/صلاحية/موديل غير متاح تبان في اللوج فورًا.
+            last_errors.append(f"{model_name}: {exc}")
+            logger.warning("فشل موديل Groq %s: %s", model_name, exc)
+
+    if last_errors:
+        logger.warning(
+            "كل موديلات Groq فشلت لهذا المقطع، هيتم إرجاع النص الخام بدون تنقيح. الأخطاء: %s",
+            " | ".join(last_errors),
+        )
     return text
 
 
