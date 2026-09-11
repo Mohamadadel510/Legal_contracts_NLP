@@ -7,10 +7,7 @@ cleaning and clause-segmentation logic is the notebook's; what changed is
 everything that tied it to Colab:
 
   * no !apt-get / google.colab / files.upload() - extract() takes a path
-  * PDFs with a real text layer go through PyMuPDF first. The notebook
-    imported fitz but always rasterised, so every PDF needed Poppler +
-    Tesseract; a born-digital contract now needs neither and is far more
-    accurate besides.
+  * PDFs with a real text layer go through PyMuPDF first.
   * Tesseract and Groq are optional. Missing either degrades the result,
     it does not raise.
 
@@ -26,7 +23,6 @@ import logging
 import unicodedata
 from pathlib import Path
 from typing import List, Tuple
-import os
 import pytesseract
 
 # تحديد مسار التثبيت المباشر لمحرك Tesseract على ويندوز
@@ -54,7 +50,6 @@ except ImportError:
 
 try:
     import pytesseract
-    # Windows installs Tesseract outside PATH; TESSERACT_CMD overrides.
     _tess_cmd = os.environ.get("TESSERACT_CMD")
     if _tess_cmd:
         pytesseract.pytesseract.tesseract_cmd = _tess_cmd
@@ -95,10 +90,7 @@ SUPPORTED_EXTENSIONS = {
     ".txt", ".csv", ".json",
 }
 
-# Below this many characters a PDF text layer is treated as absent/broken
-# and we fall back to OCR.
 MIN_TEXT_LAYER_CHARS = 120
-
 PAGE_SEPARATOR = "\n\n--- صفحة جديدة ---\n\n"
 
 
@@ -119,68 +111,43 @@ def detect_file_type(file_path: str) -> str:
 
 
 # ==========================================================================
-# Groq refinement (optional)
+# Groq refinement (LLM Contract Reconstruction)
 # ==========================================================================
-# The notebook listed llama-3.3-70b-versatile and friends, none of which exist
-# on this account. Every refinement call 404'd, the except branch swallowed it,
-# and the caller got the raw OCR back believing it had been cleaned - which is
-# why scanned contracts came out unreadable. These ids are on the account:
-# allam is Arabic-native and has a 7,000/day quota, so it carries the bulk and
-# leaves the analysis model's 1,000 for the analysis.
 GROQ_TEXT_MODELS = [
     "qwen/qwen3.8-27b",
     "openai/gpt-oss-20b",
     "allam-2-7b",
 ]
 
-# Small on purpose. Handed a whole page, the model reconstructs the first
-# paragraph beautifully and then coasts, leaving the rest of the page as
-# broken as it found it. Roughly a paragraph at a time keeps its attention on
-# all of the text, at the cost of a few more requests.
-MAX_REFINE_CHARS = 1200
+# تم تكبير سعة المقطع لضمان استيعاب البنود كاملة وعدم فصل السياق أثناء التنظيف
+MAX_REFINE_CHARS = 3500
 
-_REFINE_PROMPT = """أنت مدقق نصوص قانونية عربية، ومهمتك إصلاح مخرجات OCR لعقد ممسوح ضوئياً.
+_REFINE_PROMPT = """أنت خبير في تدقيق وإعادة إعمار العقود والنصوص القانونية العربية الممسوخة بواسطة محركات الـ OCR.
 
-العيوب المتوقعة في هذا النص، أصلحها جميعاً:
-1. حرف «د» مكرر داخل الكلمات ناتج عن مدّ الأحرف (الكشيدة) في النص المضبوط:
-   «الطدددرف» = «الطرف»، «بالددددور» = «بالدور». احذف التكرار الزائد فقط،
-   وأبقِ الدال الأصلية إن كانت جزءاً من الكلمة.
-2. كلمات مقطّعة بمسافات داخلية: «ط رف أول بائ ع» = «طرف أول بائع».
-3. أرقام وأقواس في غير موضعها بسبب اتجاه النص: «رقم53 )» = «رقم (53)».
-4. استبدالات حرفية ثابتة يخطئ فيها المحرك، صحّحها حيثما تُنتج كلمة صحيحة:
-   ل ← و   «موك» = «ملك»، «عوى» = «على»، «لوعاموين» = «للعاملين»
-   ص ← د   «دندوق» = «صندوق»
-   ت ← ه   «الهامين» = «التأمين»، «مسااحتها» = «مساحتها»
-   ت ← ه   «مهر» = «متر»، «بهقسيم» = «بتقسيم»
-   ع ← ى   «السابى» = «السابع»، «مربى» = «مربع»
-   ئ ← ل   «الكالنة» = «الكائنة»
-   ث ← فراغ «ال ان( ى» = «الثاني»
-   ق ← م   «مانون» = «قانون»
-   ي ← ل   «القبوى» = «القبلي»
+المطلوب منك:
+إعادة تصحيح وصياغة النص المرفق ليصبح عقداً قانونياً سليماً، واضحاً، ومقروءاً بنسبة 100% وبأعلى جودة تنسيق الماركدون (Markdown).
 
-قواعد ملزمة:
-- لا تخترع أي معلومة. إن تعذّر تخمين كلمة، اتركها كما هي.
-- لا تغيّر أي اسم أو رقم أو تاريخ أو مبلغ.
-- لا تلخّص ولا تحذف أي بند.
-- أعد النص المصحّح فقط، دون مقدمة أو تعليق.
+القواعد والتعليمات الإلزامية:
+1. إجبار استعادة الصياغة القانونية: أصلح الكلمات المتقطعة والمشوهة (مثل "ال طا ار" -> "الطرف"، "ابارا بادر" -> "أبراج بدر"، "مدينال عهاور" -> "مدينة زهور"، "3032" -> "2023").
+2. الهيكلة والتنسيق (Markdown):
+   - استخدم العناوين العريضة للبنود: **البند الأول:**، **البند الثاني:**، وهكذا.
+   - ضع أسماء الأطراف والتوقيعات في أسطر مستقلة ومنسقة.
+   - استخدم القوائم الرقمية للشرط الفرعية داخل البنود.
+3. حظر تحريف البيانات الرقمية أو الحساسة:
+   - حافظ على الأرقام الحقيقية المذكورة في النص الأصلي (الأسعار، الأرقام القومية، المساحات، أرقام العقارات والقرارات) إذا كانت واضحة، ولا تخترع أرقاماً جديدة إطلاقاً.
+   - اترك النقط أو الأقواس الفارغة (....................) للمعلومات غير الموجودة أو الممسوحة.
+4. عدم الحذف أو الإيجاز: لا تلخص إطلاقاً ولا تحذف أي فقرة أو شرط قانوني مهما كان قصيراً.
+5. لا تضف أي مقدمة، تعليق، أو خاتمة (مثل "إليك النص المعدل" أو "بعد المراجعة"). انطق بالعقد فوراً.
 
-النص:
+النص الممسوح ضوئياً (OCR Raw Output):
 {raw_text}"""
 
 
 def _groq_key() -> str:
-    """The key, from settings rather than the raw environment.
-
-    os.environ alone is not enough: .env is loaded by config, and this module
-    is imported before it on some paths (the benchmark hit exactly that).
-    Reading the environment directly then found nothing, refinement silently
-    no-opped, and the caller got raw OCR back believing it had been cleaned -
-    the same silent-skip failure the wrong model ids caused earlier.
-    """
     try:
         from .config import settings
         return settings.groq_api_key or os.environ.get("GROQ_API_KEY", "")
-    except Exception:  # noqa: BLE001 - config is optional for this module
+    except Exception:
         return os.environ.get("GROQ_API_KEY", "")
 
 
@@ -205,15 +172,15 @@ def _split_for_refinement(text: str, limit: int = MAX_REFINE_CHARS) -> List[str]
     return chunks
 
 
-# Models sometimes answer with "بعد المراجعة، يصبح النص كالتالي:" before the
-# text itself. Drop that lead-in rather than letting it into the contract.
-_PREAMBLE = re.compile(
-    r"\A[^\n]{0,140}?(?:النص\s+(?:المصحح|المنقح|بعد)|كالتالي|كما\s+يلي)[^\n]{0,40}?:\s*",
-)
-
-
 def _strip_preamble(text: str) -> str:
-    return _PREAMBLE.sub("", text.strip(), count=1).strip()
+    """تنظيف شامل لأي عبارات تقديمية من الموديل"""
+    cleaned = re.sub(
+        r"\A.*?(?:النص المصحح|النص المعدل|إليك العقد|العقد بعد التصحيح|كالتالي|كما يلي):\s*",
+        "",
+        text.strip(),
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    return cleaned.strip()
 
 
 def _refine_chunk(client, text: str) -> str:
@@ -226,18 +193,16 @@ def _refine_chunk(client, text: str) -> str:
                 temperature=0.0,
             )
             result = _strip_preamble(response.choices[0].message.content or "")
-            # A refusal or a summary is worse than the raw text. Anything much
-            # shorter than the input is one of those, so keep the original.
-            if result and len(result) >= len(text) * 0.5:
+            if result and len(result) >= len(text) * 0.4:
                 return result
             logger.warning("Refinement from %s looked truncated; keeping raw", model_name)
-        except Exception as exc:  # try the next model in the list
+        except Exception as exc:
             logger.warning("Groq model %s failed: %s", model_name, exc)
     return text
 
 
 def refine_text_with_groq(raw_text: str) -> str:
-    """Repair OCR artefacts via Groq. Returns raw_text unchanged on any failure."""
+    """Repair OCR artefacts via Groq LLM."""
     if not raw_text or not raw_text.strip():
         return ""
     if not groq_available():
@@ -249,7 +214,7 @@ def refine_text_with_groq(raw_text: str) -> str:
         return "\n\n".join(
             _refine_chunk(client, chunk) for chunk in _split_for_refinement(raw_text)
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("Groq refinement unavailable (%s); keeping raw text", exc)
         return raw_text
 
@@ -258,7 +223,7 @@ def refine_text_with_groq(raw_text: str) -> str:
 # Image pre-processing
 # ==========================================================================
 def preprocess_image_for_ocr(pil_img):
-    """CLAHE contrast boost before Tesseract. No-op without OpenCV."""
+    """CLAHE contrast boost before Tesseract."""
     if not HAS_CV2:
         return pil_img.convert("L")
     cv_img = np.array(pil_img.convert("RGB"))
@@ -267,11 +232,6 @@ def preprocess_image_for_ocr(pil_img):
     return Image.fromarray(clahe.apply(gray))
 
 
-# psm 6 - "assume a single uniform block of text" - rather than psm 3's full
-# automatic page segmentation. A contract page is one justified column, and
-# psm 3's layout analysis on justified Arabic is fragile: it hunts for columns
-# that are not there and mis-slices the line, which is part of how the kashida
-# stretch ends up read as a row of dals.
 TESS_CONFIG = r"--oem 3 --psm 6 -l ara+eng"
 
 
@@ -286,106 +246,13 @@ def _ocr_image(pil_img) -> str:
 
 
 # ==========================================================================
-# Extraction per file type
-# ==========================================================================
-def extract(file_path: str, refine: bool = True) -> dict:
-    path = Path(file_path)
-    result = {
-        "status": "error",
-        "metadata": {
-            "file_name": path.name,
-            "file_type": detect_file_type(file_path),
-            "num_pages": 0,
-            "method": None,
-            "num_clauses": 0,
-        },
-        "raw_text": "",
-        "clean_text": "",
-        "clauses": [],
-        "errors": [],
-    }
-
-    if not path.exists():
-        result["errors"].append(f"الملف غير موجود: {file_path}")
-        return result
-
-    if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
-        result["errors"].append(f"نوع ملف غير مدعوم: {path.suffix}")
-        return result
-
-    try:
-        # 1. استخراج النص الخام من الملف
-        page_texts, method, page_count = extract_document_text(file_path, refine=refine)
-    except Exception as exc:
-        result["errors"].append(str(exc))
-        return result
-
-    raw_text = PAGE_SEPARATOR.join(p for p in page_texts if p and p.strip())
-    if not raw_text.strip():
-        result["metadata"]["method"] = method
-        result["errors"].append(
-            "تمت المعالجة لكن لم يُعثر على نص قابل للقراءة داخل الملف."
-        )
-        return result
-
-    # 2. معالجة مشكلات السطور والمسافات المبدئية
-    repaired = repair_scan_artifacts(raw_text)
-    damage = scan_damage_ratio(repaired)
-    result["metadata"]["damage_ratio"] = round(damage, 3)
-
-    # 3. إجبار التمرير على الـ LLM لمعالجة وتنقيتها دائماً
-    if refine:
-        logger.info("Forcing Groq LLM refinement for extracted text...")
-        method = f"{method}+llm_refined"
-        repaired = refine_text_with_groq(repaired)
-
-    # 4. تنظيف النص النهائي وتقسيمه إلى بنود قانونية
-    clean_text = clean_arabic_text(repaired)
-    clauses = segment_legal_clauses(clean_text)
-
-    result.update({
-        "status": "ok",
-        "raw_text": raw_text,
-        "clean_text": clean_text,
-        "clauses": clauses,
-    })
-    result["metadata"].update({
-        "num_pages": page_count,
-        "method": method,
-        "num_clauses": len(clauses),
-    })
-    return result
-
-# ==========================================================================
 # Arabic cleaning
 # ==========================================================================
-# --------------------------------------------------------------------------
-# Scanned-document repair
-# --------------------------------------------------------------------------
-# Justified Arabic stretches the join between letters with a kashida (ـ).
-# Tesseract reads that stroke as a row of dals, so "الطرف" arrives as
-# "الطدددددرف" and "بالدور" as "بالددددددور" - fifty such runs in a single
-# page of the sample contract. Collapsing each run to one dal is the right
-# call rather than deleting it: where the word really did contain a dal it is
-# now correct outright, and where it did not, what is left ("الطدرف") is an
-# obvious non-word that the LLM pass repairs. Deleting the run instead would
-# turn "بالدور" into "بالور" and hide the damage.
 _KASHIDA_AS_DAL = re.compile(r"د{3,}")
-
-# No Arabic word carries the same letter three times in a row; a run like that
-# is always the scanner smearing one glyph.
 _LETTER_SMEAR = re.compile(r"([ء-ي])\1{2,}")
-
-# "رقم53" - the digit run is glued to the word it belongs to.
 _DIGIT_GLUED = re.compile(r"([ء-ي])(\d)")
 _WORD_GLUED = re.compile(r"(\d)([ء-ي])")
 
-
-# A scan of a justified page comes back as a column of short fragments -
-# "حلوان–", "المكونة ( من عد 5". Handed those, the model treats each as its
-# own item and copies them through untouched; rejoined into flowing prose it
-# reconstructs them. A line is a continuation unless the previous one closed a
-# sentence or this one opens a new clause.
 _BLOCK_START = re.compile(r"^\s*(?:البند|المادة|أولا|أولاً|ثانيا|ثانياً|ثالثا|ثالثاً|"
                           r"رابعا|رابعاً|خامسا|خامساً|\d{1,2}\s*[-.)]|\(\d{1,2}\))")
 _SENTENCE_END = re.compile(r"[.:؟!]\s*$")
@@ -414,11 +281,7 @@ def merge_wrapped_lines(text: str) -> str:
 
 
 def repair_scan_artifacts(text: str) -> str:
-    """Undo the mechanical damage a scan leaves behind.
-
-    Deterministic only - it never guesses at a word. Whatever it cannot fix
-    is left visibly broken for `refine_text_with_groq` to reconstruct.
-    """
+    """Undo mechanical scan damage before passing to LLM."""
     if not text:
         return ""
 
@@ -429,17 +292,11 @@ def repair_scan_artifacts(text: str) -> str:
     return merge_wrapped_lines(out)
 
 
-# A born-digital PDF is usually clean, but not always: some are a scan someone
-# ran through an OCR tool before saving, and the text layer carries the same
-# kashida runs and one-letter fragments. Measuring the damage rather than
-# assuming it from the file type decides whether the repair pass is worth a
-# request.
 _DAMAGE_TOKENS = re.compile(r"د{3,}|ـ{2,}")
 DAMAGE_THRESHOLD = 0.06
 
 
 def scan_damage_ratio(text: str) -> float:
-    """Share of words that look mangled. 0.0 for clean text."""
     words = re.findall(r"[ء-ي]+", text)
     if not words:
         return 0.0
@@ -452,17 +309,12 @@ def scan_damage_ratio(text: str) -> float:
 
 
 def clean_arabic_text(text: str) -> str:
-    """Normalisation only - never rewrites or drops legal wording.
-
-    Implements the cleaning the notebook documented but left unwritten
-    (its `clean_text` variable was never assigned).
-    """
     if not text:
         return ""
 
     text = unicodedata.normalize("NFC", text)
-    text = text.replace("ـ", "")                          # tatweel
-    text = re.sub(r"[​-‏‪-‮]", "", text)  # bidi / zero-width
+    text = text.replace("ـ", "")
+    text = re.sub(r"[​-‏‪-‮]", "", text)
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     text = re.sub(r"[ \t]{2,}", " ", text)
     text = re.sub(r" *\n *", "\n", text)
@@ -471,8 +323,6 @@ def clean_arabic_text(text: str) -> str:
     return text.strip()
 
 
-# Shared by the heading repair and the clause pattern. One copy matters: the
-# repair step has to recognise exactly the headings the segmenter looks for.
 ORDINAL_WORDS = (
     r"(?:الأول|الأولى|الثاني|الثانية|الثالث|الثالثة|الرابع|الرابعة|الخامس|الخامسة|"
     r"السادس|السادسة|السابع|السابعة|الثامن|الثامنة|التاسع|التاسعة|العاشر|العاشرة|"
@@ -487,7 +337,6 @@ STANDALONE_ORDINALS = (
 
 
 def fix_ocr_clause_headers(text: str) -> str:
-    """Repair OCR damage in clause headings. From the notebook, one rule fixed."""
     if not text:
         return ""
 
@@ -498,13 +347,6 @@ def fix_ocr_clause_headers(text: str) -> str:
 
     text = re.sub(r'(البند\s+[أ-ي]+)\s*[\n\r_]+(عشر)', r'\1 \2', text)
     text = re.sub(r'(المادة\s+\w+)\s*[\n\r_]+(عشر)', r'\1 \2', text)
-    # Detach a heading that OCR glued onto the clause body. The notebook's rule
-    # was r'(البند\s*[أ-ي]+)(?=[أ-ي])' — [أ-ي]+ is greedy, so the lookahead
-    # forced it to give a letter back and the space landed *inside* the ordinal:
-    # "البند الأول" became "البند الأو ل". That corrupted every heading in the
-    # document, the segmenter then matched nothing, and each contract silently
-    # fell back to splitting on blank lines. Anchoring on the known ordinals
-    # matches the heading as one unit.
     text = re.sub(rf'(البند\s+{ORDINAL_WORDS})(?=[أ-ي])', r'\1 ', text)
     text = re.sub(rf'(المادة\s+{ORDINAL_WORDS})(?=[أ-ي])', r'\1 ', text)
 
@@ -521,7 +363,6 @@ def fix_ocr_clause_headers(text: str) -> str:
 # Clause segmentation
 # ==========================================================================
 def build_advanced_clause_pattern():
-    """Arabic legal numbering patterns. Verbatim from the notebook."""
     words_pattern = ORDINAL_WORDS
     ordinals_pattern = STANDALONE_ORDINALS
     patterns = [
@@ -535,7 +376,6 @@ def build_advanced_clause_pattern():
 
 
 def segment_legal_clauses(text: str) -> List[dict]:
-    """Split into numbered clauses. Never invents a clause that isn't there."""
     if not text or not text.strip():
         return []
 
@@ -569,7 +409,6 @@ def segment_legal_clauses(text: str) -> List[dict]:
                 })
         return clauses
 
-    # Fallback: paragraph split when no explicit numbering is present
     paragraphs = [p.strip() for p in prepared_text.split("\n\n") if p.strip()]
     return [
         {"clause_id": i + 1, "clause_label": f"فقرة {i + 1}", "clause_text": p}
@@ -581,20 +420,7 @@ def segment_legal_clauses(text: str) -> List[dict]:
 # Public API
 # ==========================================================================
 def extract(file_path: str, refine: bool = True) -> dict:
-    """Turn a contract file into clean text plus numbered clauses.
-
-    Returns
-    -------
-    dict with keys:
-        status        "ok" | "error"
-        metadata      file_name, file_type, num_pages, method, num_clauses
-        raw_text      concatenated pages, exactly as extracted
-        clean_text    normalised text
-        clauses       [{clause_id, clause_label, clause_text}, ...]
-        errors        list of human-readable messages (Arabic)
-
-    Never raises for an unreadable document - inspect `status` instead.
-    """
+    """Turn a contract file into clean text plus numbered clauses."""
     path = Path(file_path)
     result = {
         "status": "error",
@@ -633,19 +459,15 @@ def extract(file_path: str, refine: bool = True) -> dict:
         )
         return result
 
-    # The scan paths already repaired and refined their own pages. A text layer
-    # skipped both, on the assumption it was born digital - but plenty of PDFs
-    # are a scan that was OCR'd once and saved, and those carry exactly the same
-    # damage. Measure it and repair when it is actually there.
     repaired = repair_scan_artifacts(raw_text)
     damage = scan_damage_ratio(repaired)
     result["metadata"]["damage_ratio"] = round(damage, 3)
 
-    if method == "pymupdf_text_layer" and damage >= DAMAGE_THRESHOLD:
-        logger.info("Text layer looks OCR-damaged (%.0f%%) - repairing", damage * 100)
-        result["metadata"]["method"] = method = "pymupdf_text_layer+repair"
-        if refine:
-            repaired = refine_text_with_groq(repaired)
+    # إجبار التمرير والتصحيح النهائي بواسطة الـ LLM دائمًا عند وجود تفعيل للـ refine
+    if refine:
+        logger.info("Executing LLM legal contract reconstruction via Groq...")
+        method = f"{method}+llm_refined"
+        repaired = refine_text_with_groq(repaired)
 
     clean_text = clean_arabic_text(repaired)
     clauses = segment_legal_clauses(clean_text)
