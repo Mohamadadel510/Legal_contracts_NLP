@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import List, Tuple
 import pytesseract
 
-# تحديد مسار التثبيت المباشر لمحرك Tesseract على ويندوز
+# تحديد مسار التثبيت المباشر لمحرك Tesseract على نظام ويندوز
 tesseract_path = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 os.environ["TESSERACT_CMD"] = tesseract_path
 pytesseract.pytesseract.tesseract_cmd = tesseract_path
